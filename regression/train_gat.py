@@ -175,7 +175,7 @@ def main():
     num_iter = math.ceil((epochs * steps_per_epoch) / len(train_loader))
     break_flag = False
 
-    optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    optimizer = optim.Adam(model.parameters(), lr=5e-4, weight_decay=1e-4)
     criterion = nn.MSELoss()
     writer = SummaryWriter("./tensorboard")
     # scheduler = optim.lr_scheduler.CyclicLR(

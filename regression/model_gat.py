@@ -54,7 +54,7 @@ class LinearReLU(nn.Module):
         return self.inc(x)
 
 class StackCNNwithSelfAttention(nn.Module):
-    def __init__(self, layer_num, seq_length, in_channels, out_channels, kernel_size, stride=1, padding=0):
+    def __init__(self, layer_num, seq_length, in_channels, out_channels, kernel_size, stride=1, padding=0, dropout=0.5):
         super().__init__()
 
         self.inc = nn.Sequential(OrderedDict([('conv_layer0', Conv1dReLU(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding))]))
@@ -75,18 +75,18 @@ class StackCNNwithSelfAttention(nn.Module):
         # self.pooling_layer = nn.AdaptiveMaxPool1d(1)
         self.weight = nn.Parameter(torch.ones(2))
         self.weight.requires_grad = True
-        self.attn_layer = nn.MultiheadAttention(embed_dim=out_channels, num_heads=1, dropout=0.5, batch_first=True)
+        self.attn_layer = nn.MultiheadAttention(embed_dim=out_channels, num_heads=1, dropout=dropout, batch_first=True)
 
         self.linears = nn.Sequential(
             nn.Linear(seq_length * 96, 1024),
-            nn.LeakyReLU(),
-            nn.Dropout(0.5),
+            nn.ReLU(),
+            nn.Dropout(dropout),
             nn.Linear(1024, 256),
-            nn.LeakyReLU(),
-            nn.Dropout(0.5),
+            nn.ReLU(),
+            nn.Dropout(dropout),
             nn.Linear(256, 96),
-            nn.LeakyReLU(),
-            nn.Dropout(0.5)
+            nn.ReLU(),
+            nn.Dropout(dropout)
         )
 
     def forward(self, x, mask=None):
