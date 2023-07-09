@@ -81,23 +81,15 @@ class StackCNNwithSelfAttention(nn.Module):
             nn.Linear(seq_length * 96, 1024),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(1024, 256),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(256, 96),
-            nn.ReLU(),
-            nn.Dropout(dropout)
+            nn.Linear(1024, 96)
         )
 
-    def forward(self, x, mask=None):
+    def forward(self, x, mask):
 
         x = torch.permute(x, (0, 2, 1))
         x = self.inc(x)
         x = torch.permute(x, (0, 2, 1))
-        if mask is not None:
-            x_attn, _ = self.attn_layer(x, x, x, mask)
-        else:
-            x_attn, _ = self.attn_layer(x, x, x)
+        x_attn, _ = self.attn_layer(x, x, x, mask)
         weights = self.weight / torch.sum(self.weight)
         x = x * weights[0] + x_attn * weights[1]
         x = torch.permute(x, (0, 2, 1))
@@ -105,13 +97,6 @@ class StackCNNwithSelfAttention(nn.Module):
         x = torch.reshape(x, (x.shape[0], -1))
         x = self.linears(x)
         x = torch.reshape(x , (x.shape[0], -1, 1))
-        # x = self.pooling_layer(x)
-        # x = torch.permute(x, (0, 2, 1))
-        # attn_score, _ = self.attn_layer(query=x, key=x, value=x)
-        # weights = self.weight / torch.sum(self.weight)
-        # x = weights[0] * attn_score + weights[1] * x
-        # x = torch.permute(x, (0, 2, 1))
-        # x = self.pooling_layer(x).squeeze(-1)
         x = x.squeeze(-1)
 
         return x, seq_features
@@ -147,17 +132,16 @@ class TargetRepresentation(nn.Module):
 class ProteinRepresentation(nn.Module):
     def __init__(self, block_num, embedding_num, input_features, seq_length, dropout):
         super().__init__()
-        self.reshaper = nn.Linear(in_features=input_features, out_features=embedding_num)
         self.block_list = nn.ModuleList()
         for block_idx in range(block_num):
             self.block_list.append(
                 StackCNNwithSelfAttention(
                     block_idx+1, 
                     seq_length, 
-                    embedding_num, 
+                    input_features, 
                     96, 
-                    3, 
-                    padding = 3//2, 
+                    7, 
+                    padding = 7//2, 
                     dropout = dropout
                 )
             )
@@ -168,8 +152,6 @@ class ProteinRepresentation(nn.Module):
         
     def forward(self, x, mask=None):
         # if mask is not None:
-        mask = mask.to(torch.float32)
-        x = F.relu(self.reshaper(x.type(torch.float32)))
         feats, seq_features = [], []
         for block in self.block_list:
             feature, seq_feature = block(x, mask)
@@ -372,17 +354,13 @@ class MGraphDTA(nn.Module):
             nn.Linear(filter_num * 3 * 3, 1024),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(1024, 1024),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(1024, 256),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(256, out_dim)
+            nn.Linear(1024, out_dim)
         )
 
     def forward(self, data):
         # print('In forward')
+        data.prot5_embedding = data.prot5_embedding.to(torch.float32)
+        data.mask = data.mask.to(torch.float32)
         protein_features, seq_features = self.protein_encoder(data.prot5_embedding, mask=data.mask)
         node_features, ligand_features = self.ligand_encoder(data)
         seq_features = torch.permute(seq_features, (0, 2, 1))
