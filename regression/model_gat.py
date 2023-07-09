@@ -147,17 +147,16 @@ class TargetRepresentation(nn.Module):
 class ProteinRepresentation(nn.Module):
     def __init__(self, block_num, embedding_num, input_features, seq_length, dropout):
         super().__init__()
-        self.reshaper = nn.Linear(in_features=input_features, out_features=embedding_num)
         self.block_list = nn.ModuleList()
         for block_idx in range(block_num):
             self.block_list.append(
                 StackCNNwithSelfAttention(
                     block_idx+1, 
                     seq_length, 
-                    embedding_num, 
+                    input_features, 
                     96, 
-                    3, 
-                    padding = 3//2, 
+                    7, 
+                    padding = 7//2, 
                     dropout = dropout
                 )
             )
@@ -167,9 +166,6 @@ class ProteinRepresentation(nn.Module):
         self.linear = nn.Linear(block_num * 96, 96)
         
     def forward(self, x, mask=None):
-        # if mask is not None:
-        mask = mask.to(torch.float32)
-        x = F.relu(self.reshaper(x.type(torch.float32)))
         feats, seq_features = [], []
         for block in self.block_list:
             feature, seq_feature = block(x, mask)
@@ -372,9 +368,6 @@ class MGraphDTA(nn.Module):
             nn.Linear(filter_num * 3 * 3, 1024),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(1024, 1024),
-            nn.ReLU(),
-            nn.Dropout(dropout),
             nn.Linear(1024, 256),
             nn.ReLU(),
             nn.Dropout(dropout),
@@ -383,6 +376,8 @@ class MGraphDTA(nn.Module):
 
     def forward(self, data):
         # print('In forward')
+        data.prot5_embedding = data.prot5_embedding.to(torch.float32)
+        data.mask = data.mask.to(torch.float32)
         protein_features, seq_features = self.protein_encoder(data.prot5_embedding, mask=data.mask)
         node_features, ligand_features = self.ligand_encoder(data)
         seq_features = torch.permute(seq_features, (0, 2, 1))
