@@ -107,7 +107,7 @@ class GNNDataset(Dataset):
     def get(self, idx: int) -> Data:
         return super().get(idx)
 
-    def process_data(self, data_path, raw_data_dir, graph_dict, mode, save_dir):
+    def process_data(self, data_path, graph_dict, mode, save_dir):
         df = pd.read_csv(data_path)
         prot5_path = self.raw_paths[2]
         esm2_path = self.raw_paths[3]
