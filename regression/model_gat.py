@@ -62,7 +62,7 @@ class StackCNNwithSelfAttention(nn.Module):
             self.inc.add_module(f'non_linearity{layer_idx}', nn.LeakyReLU())
             # self.inc.add_module(f'batch_norm{layer_idx}', nn.BatchNorm1d(num_features=96))
             self.inc.add_module(f'layer_norm{layer_idx}', LayerNormalizer(96))
-            self.inc.add_module(f'dropout{layer_idx}', nn.Dropout(0.5))
+            self.inc.add_module(f'dropout{layer_idx}', nn.Dropout(dropout))
             self.inc.add_module('conv_layer%d' % (layer_idx + 1), Conv1dReLU(out_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding))
             
         # self.inc2 = nn.Sequential()
@@ -145,13 +145,21 @@ class TargetRepresentation(nn.Module):
 
 
 class ProteinRepresentation(nn.Module):
-    def __init__(self, block_num, embedding_num, input_features, seq_length):
+    def __init__(self, block_num, embedding_num, input_features, seq_length, dropout):
         super().__init__()
         self.reshaper = nn.Linear(in_features=input_features, out_features=embedding_num)
         self.block_list = nn.ModuleList()
         for block_idx in range(block_num):
             self.block_list.append(
-                StackCNNwithSelfAttention(block_idx+1, seq_length, embedding_num, 96, 3, padding = 3//2)
+                StackCNNwithSelfAttention(
+                    block_idx+1, 
+                    seq_length, 
+                    embedding_num, 
+                    96, 
+                    3, 
+                    padding = 3//2, 
+                    dropout = dropout
+                )
             )
 
         self.weights = nn.Parameter(torch.ones(block_num))
@@ -348,7 +356,7 @@ class MGraphDTA(nn.Module):
         # self.protein_encoder_2 = TargetRepresentation(block_num, vocab_protein_size, embedding_size)
         
         self.ligand_encoder = GraphDenseNet(num_input_features=22, out_dim=filter_num*3, block_config=[8, 8, 8], bn_sizes=[2, 2, 2])
-        self.protein_encoder = ProteinRepresentation(block_num, embedding_size, input_features=1024, seq_length=1200)
+        self.protein_encoder = ProteinRepresentation(block_num, embedding_size, input_features=1024, seq_length=1200, dropout=dropout)
         # self.protein_encoder_2 = ProteinRepresentation(block_num, embedding_size, input_features=480, seq_length=1200)
 
         self.cross_attention = nn.MultiheadAttention(

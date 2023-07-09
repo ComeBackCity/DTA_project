@@ -73,7 +73,7 @@ class GNNDataset(Dataset):
 
     @property
     def raw_file_names(self):
-        return ['data_train.csv', 'data_test.csv', 'train_prot5.pth', 'test_prot5.pth']
+        return ['data_train.csv', 'data_test.csv', 'prot5.pth', 'esm2.pth']
 
     @property
     def processed_file_names(self):
@@ -107,14 +107,17 @@ class GNNDataset(Dataset):
     def get(self, idx: int) -> Data:
         return super().get(idx)
 
-    def process_data(self, data_path, embed_path, graph_dict, mode, save_dir):
+    def process_data(self, data_path, raw_data_dir, graph_dict, mode, save_dir):
         df = pd.read_csv(data_path)
-        embedding_map = torch.load(embed_path)
-        esm2_dir = osp.join(self.root, "raw", mode)
+        prot5_path = self.raw_paths[2]
+        esm2_path = self.raw_paths[3]
+        prot5_map = torch.load(prot5_path)
+        esm2_map = torch.load(esm2_path)
+        print(f"length of esm2 map is = {len(esm2_map)}")
 
         # data_list = []
         itr = 0
-        for idx , row in tqdm(df.iterrows()):
+        for _ , row in tqdm(df.iterrows()):
             smi = row['compound_iso_smiles']
             sequence = row['target_sequence']
             label = row['affinity']
@@ -131,14 +134,13 @@ class GNNDataset(Dataset):
             else:
                 target = target[:target_len]
 
-            prot5_embedding = embedding_map[sequence]
+            prot5_embedding = prot5_map[sequence]
             pad_length = target_len - prot5_embedding.shape[0] 
             prot5_embedding = F.pad(prot5_embedding, (0, 0, 0, pad_length), 'constant', 0)
             prot5_embedding = torch.unsqueeze(prot5_embedding, dim=0).to(torch.float16)
             mask = (prot5_embedding.sum(dim=2) != 0).to(torch.float16)
 
-            esm2_embedding_path = osp.join(esm2_dir, f"{idx}.pt")
-            esm2_embedding = torch.load(esm2_embedding_path)
+            esm2_embedding = esm2_map[sequence]
 
             # print(prot5_embedding.shape)
             # print(esm2_embedding.shape)
@@ -194,26 +196,8 @@ class GNNDataset(Dataset):
         save_dir_test = osp.join(self.root, 'processed', 'test')
         os.makedirs(save_dir_test, exist_ok=True)
 
-        self.process_data(self.raw_paths[0], self.raw_paths[2], graph_dict, 'train', save_dir_train)
-        self.process_data(self.raw_paths[1], self.raw_paths[3], graph_dict, 'test', save_dir_test)
-
-        # if self.pre_filter is not None:
-        #     train_list = [train for train in train_list if self.pre_filter(train)]
-        #     test_list = [test for test in test_list if self.pre_filter(test)]
-
-        # if self.pre_transform is not None:
-        #     train_list = [self.pre_transform(train) for train in train_list]
-        #     test_list = [self.pre_transform(test) for test in test_list]
-
-        # print('Graph construction done. Saving to file.')
-
-        # for idx, item in enumerate(tqdm(train_list)):
-            
-        #     torch.save(item, f'{save_dir}/processed_data_train_{idx}.pt')
-
-        # for idx, item in enumerate(tqdm(test_list)):
-            
-        #     torch.save(item, f'{save_dir}/processed_data_test_{idx}.pt')
+        self.process_data(self.raw_paths[0], graph_dict, 'train', save_dir_train)
+        self.process_data(self.raw_paths[1], graph_dict, 'test', save_dir_test)
 
     def get_nodes(self, g):
         feat = []
