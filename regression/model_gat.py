@@ -7,6 +7,7 @@ import torch_geometric.nn as gnn
 from torch import Tensor
 from collections import OrderedDict
 from torch_geometric.utils import to_dense_batch
+import numpy as np
 
 
 '''
@@ -64,19 +65,11 @@ class StackCNNwithSelfAttention(nn.Module):
             self.inc.add_module(f'layer_norm{layer_idx}', LayerNormalizer(96))
             self.inc.add_module(f'dropout{layer_idx}', nn.Dropout(dropout))
             self.inc.add_module('conv_layer%d' % (layer_idx + 1), Conv1dReLU(out_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding))
-            
-        # self.inc2 = nn.Sequential()
-        # self.inc.add_module(f'sa_block', nn.MultiheadAttention(embed_dim=out_channels, num_heads=1, dropout=0.2))
-        # self.inc.add_module('pool_layer', nn.AdaptiveMaxPool1d(1))
-        # self.inc.add_module('non_linearity', nn.LeakyReLU())
-        # self.inc.add_module('batch_norm', nn.BatchNorm1d(num_features=96))
-        # self.inc.add_module('dropout', nn.Dropout(0.2))
-
-        # self.pooling_layer = nn.AdaptiveMaxPool1d(1)
+        
         self.weight = nn.Parameter(torch.ones(2))
         self.weight.requires_grad = True
         self.attn_layer = nn.MultiheadAttention(embed_dim=out_channels, num_heads=1, dropout=dropout, batch_first=True)
-
+        self.pe = PositionalEncoding(out_channels, dropout)
         self.linears = nn.Sequential(
             nn.Linear(seq_length * 96, 1024),
             nn.ReLU(),
@@ -89,8 +82,10 @@ class StackCNNwithSelfAttention(nn.Module):
         x = torch.permute(x, (0, 2, 1))
         x = self.inc(x)
         x = torch.permute(x, (0, 2, 1))
+        x = self.pe(x)
         x_attn, _ = self.attn_layer(x, x, x, mask)
-        weights = self.weight / torch.sum(self.weight)
+        with torch.no_grad():
+            weights = self.weight / torch.sum(self.weight)
         x = x * weights[0] + x_attn * weights[1]
         x = torch.permute(x, (0, 2, 1))
         seq_features = x
@@ -98,6 +93,8 @@ class StackCNNwithSelfAttention(nn.Module):
         x = self.linears(x)
         x = torch.reshape(x , (x.shape[0], -1, 1))
         x = x.squeeze(-1)
+
+        del weights
 
         return x, seq_features
 
@@ -120,13 +117,31 @@ class TargetRepresentation(nn.Module):
             features, seq_features = block(x)
             feats.append(features)
             seq_feats.append(seq_features)
-        # feats = [block(x) for block in self.block_list]
         x = torch.cat(feats, -1)
         x = self.linear(x)
 
         seq_features = torch.mean(seq_feats)
 
         return x, seq_features
+
+class PositionalEncoding(nn.Module):
+
+    def __init__(self, d_model: int, dropout: float = 0.5, max_len: int = 1200):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-np.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, 1, d_model)
+        pe[:, 0, 0::2] = torch.sin(position * div_term)
+        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x: Tensor) -> Tensor:
+        x = torch.permute(x, (1, 0, 2))
+        x = x + self.pe[:x.size(0)]
+        x = torch.permute(x, (1, 0, 2))
+        return self.dropout(x)
 
 
 class ProteinRepresentation(nn.Module):
@@ -151,7 +166,6 @@ class ProteinRepresentation(nn.Module):
         self.linear = nn.Linear(block_num * 96, 96)
         
     def forward(self, x, mask=None):
-        # if mask is not None:
         feats, seq_features = [], []
         for block in self.block_list:
             feature, seq_feature = block(x, mask)
@@ -159,14 +173,20 @@ class ProteinRepresentation(nn.Module):
             seq_features.append(seq_feature)
 
         seq_feat = torch.zeros(seq_features[-1].shape).to("cuda")
-        weights = self.weights / torch.sum(self.weights)
+        
+        with torch.no_grad():
+            weights = self.weights / torch.sum(self.weights)
+        
         for weight, seq_feature in zip(weights, seq_features):
             seq_feat += weight * seq_feature
-        
+
         x = torch.cat(feats, -1)
         x = self.linear(x)
 
+        del feats, seq_features, weights
+
         return x, seq_feat
+
 
 class NodeLevelBatchNorm(_BatchNorm):
     r"""
