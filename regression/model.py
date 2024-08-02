@@ -189,23 +189,44 @@ class GraphDenseNet(nn.Module):
             self.features.add_module("transition%d" % (i+1), trans)
             num_input_features = num_input_features // 2
 
-        self.classifer = nn.Linear(num_input_features, out_dim)
+        # self.classifer = nn.Linear(num_input_features, out_dim)
+        self.sa = nn.MultiheadAttention(
+            embed_dim=num_input_features, 
+            num_heads=4, 
+            dropout=0.2
+        )
+        
+        self.scaling_factor = nn.Parameter(torch.ones(2), requires_grad=True)
 
     def forward(self, data):
         data = self.features(data)
-        x = gnn.global_mean_pool(data.x, data.batch)
-        x = self.classifer(x)
+        attn_feat = self.sa(data.x)
+        scaling_factor = self.scaling_factor / torch.sum(self.scaling_factor)
+        x = scaling_factor[0] * data.x + scaling_factor[1] * attn_feat
+        # x = gnn.global_mean_pool(data.x, data.batch)
+        # x = self.classifer(x)
 
         return x
 
 class MGraphDTA(nn.Module):
     def __init__(self, block_num, vocab_protein_size, embedding_size=128, filter_num=32, out_dim=1):
         super().__init__()
-        self.protein_encoder = TargetRepresentation(block_num, vocab_protein_size, embedding_size)
+        self.protein_encoder = GraphDenseNet(num_input_features=1280, out_dim=filter_num*3, block_config=[8, 8, 8], bn_sizes=[2, 2, 2])
         self.ligand_encoder = GraphDenseNet(num_input_features=22, out_dim=filter_num*3, block_config=[8, 8, 8], bn_sizes=[2, 2, 2])
+        self.cross_attn1 = nn.MultiheadAttention(
+            embed_dim=filter_num * 3, 
+            num_heads=4, 
+            dropout=0.2
+        )
+        
+        self.cross_attn2 = nn.MultiheadAttention(
+            embed_dim=filter_num * 3, 
+            num_heads=4, 
+            dropout=0.2
+        )
 
         self.classifier = nn.Sequential(
-            nn.Linear(filter_num * 3 * 2, 1024),
+            nn.Linear(filter_num * 3 * 4, 1024),
             nn.ReLU(),
             nn.Dropout(0.1),
             nn.Linear(1024, 1024),
@@ -221,6 +242,15 @@ class MGraphDTA(nn.Module):
         target = data.target
         protein_x = self.protein_encoder(target)
         ligand_x = self.ligand_encoder(data)
+        
+        attn_feat1 = self.cross_attn1(protein_x, ligand_x, ligand_x)
+        attn_feat2 = self.cross_attn1(ligand_x, protein_x, protein_x)
+        
+        print(protein_x.shape)
+        print(ligand_x.shape)
+        print(attn_feat1.shape)
+        print(attn_feat2.shape)
+        exit()
 
         x = torch.cat([protein_x, ligand_x], dim=-1)
         x = self.classifier(x)

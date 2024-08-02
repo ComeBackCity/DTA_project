@@ -10,3 +10,4 @@ classification/
 filtered_davis/
 notable_results.txt
 protT5/
+regression/data/alphafold2

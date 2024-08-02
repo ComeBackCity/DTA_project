@@ -35,27 +35,6 @@ def seqs2int(target):
 
     return [VOCAB_PROTEIN[s] for s in target] 
 
-# def getProteinLanguageModelEmbeddings(target):
-#     pass
-
-# def get_t5_model(device):
-#     model = T5EncoderModel.from_pretrained("../protT5/protT5_checkpoint/", torch_dtype=torch.float16)
-#     model = model.to(device) # move model to GPU
-#     model = model.eval() # set model to evaluation model
-#     tokenizer = T5Tokenizer.from_pretrained("Rostlab/prot_t5_xl_uniref50", do_lower_case=False ) 
-
-#     return model, tokenizer
-
-#@title Load encoder-part of ProtT5 in half-precision. { display-mode: "form" }
-# Load ProtT5 in half-precision (more specifically: the encoder-part of ProtT5-XL-U50) 
-# def get_T5_model_enc(device):
-#     model = T5EncoderModel.from_pretrained("Rostlab/prot_t5_xl_half_uniref50-enc")
-#     model = model.to(device) # move model to GPU
-#     model = model.eval() # set model to evaluation model
-#     tokenizer = T5Tokenizer.from_pretrained('Rostlab/prot_t5_xl_half_uniref50-enc', do_lower_case=False)
-
-#     return model, tokenizer
-
 
 class GNNDataset(InMemoryDataset):
 
@@ -73,7 +52,7 @@ class GNNDataset(InMemoryDataset):
 
     @property
     def raw_file_names(self):
-        return ['data_train.csv', 'data_test.csv', 'train_prot5.pth', 'test_prot5.pth']
+        return ['data_train.csv', 'data_test.csv']
 
     @property
     def processed_file_names(self):
