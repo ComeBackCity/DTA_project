@@ -22,7 +22,8 @@ from torch_geometric import data as DATA
 from metrics import get_cindex
 # from dataset import *
 from dataset_new import *
-from model_gat import MGraphDTA
+# from model_gat import MGraphDTA
+from model import MGraphDTA
 from my_model import DTAModel
 from utils import *
 from log.train_logger import TrainLogger

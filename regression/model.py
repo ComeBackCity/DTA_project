@@ -6,6 +6,7 @@ from torch.nn.modules.batchnorm import _BatchNorm
 import torch_geometric.nn as gnn
 from torch import Tensor
 from collections import OrderedDict
+from egret import EGRETLayer, laplacian_positional_encoding
 
 
 '''
@@ -240,7 +241,7 @@ class MGraphDTA(nn.Module):
 
     def forward(self, data):
         target = data.target
-        protein_x = self.protein_encoder(target)
+        protein_x = self.ligand_encoder(data)
         ligand_x = self.ligand_encoder(data)
         
         attn_feat1 = self.cross_attn1(protein_x, ligand_x, ligand_x)

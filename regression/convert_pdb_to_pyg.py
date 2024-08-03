@@ -13,7 +13,8 @@ from graphein.protein.edges.distance import add_hydrogen_bond_interactions, \
 from graphein.protein.features.sequence.embeddings import esm_sequence_embedding, \
     biovec_sequence_embedding
     
-from graphein.protein.features.nodes.amino_acid import amino_acid_one_hot
+from graphein.protein.features.nodes.amino_acid import amino_acid_one_hot, meiler_embedding
+from graphein.protein.features.nodes.dssp import add_dssp_feature
 from graphein.protein import esm_residue_embedding
 from graphein.protein.features.nodes.geometry import add_beta_carbon_vector, add_sequence_neighbour_vector
 
@@ -47,6 +48,9 @@ def convert_nx_to_pyg(nx_graph):
     meiler_features = []
     esm_embeddings = []
     coords = []
+    beta_carbon_vectors = []
+    seq_neighbour_vector = []
+    
     node_indices = {}
     for i, (node, attr) in enumerate(nx_graph.nodes(data=True)):
         one_hot_residue = one_hot_encode_residue(attr['residue_name'])
@@ -54,12 +58,16 @@ def convert_nx_to_pyg(nx_graph):
         meiler_features.append(attr['meiler'])
         esm_embeddings.append(attr['esm_embedding'])
         coords.append(attr['coords'])
+        beta_carbon_vectors.append(attr['c_beta_vector'])
+        seq_neighbour_vector.append(attr['sequence_neighbour_vector_n_to_c'])
         node_indices[node] = i
 
     one_hot_residues = torch.tensor(one_hot_residues, dtype=torch.float)
     meiler_features = torch.tensor(meiler_features, dtype=torch.float)
     esm_embeddings = torch.tensor(esm_embeddings, dtype=torch.float)
     coords = torch.tensor(coords, dtype=torch.float)
+    beta_carbon_vectors = torch.tensor(beta_carbon_vectors, dtype=torch.float)
+    seq_neighbour_vector = torch.tensor(seq_neighbour_vector, dtype=torch.float)
     
     # Extract edge attributes and create edge indices
     edge_indices = []
@@ -85,28 +93,30 @@ def convert_nx_to_pyg(nx_graph):
 
     # Create PyG Data object
     data = Data(one_hot_residues=one_hot_residues, meiler_features=meiler_features,
-                esm_embeddings=esm_embeddings, edge_index=edge_index, edge_attr=edge_attr, pos=coords)
+                esm_embeddings=esm_embeddings, edge_index=edge_index, edge_attr=edge_attr, pos=coords, 
+                beta_carbon_vectors=beta_carbon_vectors, seq_neighbour_vector=seq_neighbour_vector)
     
     return data
 
 
 def uniprot_id_to_structure(id):
     params_to_change = {
-        "granularity": "centroids",
+        "granularity": "CA",
         "edge_construction_functions": [
             add_peptide_bonds, 
             add_hydrogen_bond_interactions,
             add_cation_pi_interactions,
-            partial(add_k_nn_edges, k=15),
+            partial(add_k_nn_edges, k=10),
             add_distance_to_edges,
         ],
         "graph_metadata_functions": [
             partial(esm_residue_embedding, model_name="esm2_t33_650M_UR50D"),
             # biovec_sequence_embedding
         ],
-        # "node_metadata_functions": [
-        #     partial(esm_residue_embedding, model_name="esm2_t33_650M_UR50D"),
-        # ]
+        "node_metadata_functions": [
+            amino_acid_one_hot,
+            meiler_embedding,
+        ]
     }
 
     config = ProteinGraphConfig(
@@ -115,6 +125,8 @@ def uniprot_id_to_structure(id):
     config.dict()
 
     g = construct_graph(config=config, path=f"./data/alphafold_structures/kiba/AF-{id}-F1-model_v4.pdb")
+    add_beta_carbon_vector(g)
+    add_sequence_neighbour_vector(g)
     pg = convert_nx_to_pyg(g)
     
     return pg

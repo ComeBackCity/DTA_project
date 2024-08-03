@@ -18,6 +18,7 @@ import sys
 sys.path.append("../")
 from convert_pdb_to_pyg import uniprot_id_to_structure
 import gc
+import pickle
 fdef_name = osp.join(RDConfig.RDDataDir, 'BaseFeatures.fdef')
 chem_feature_factory = ChemicalFeatures.BuildFeatureFactory(fdef_name)
 
@@ -42,25 +43,24 @@ def seqs2int(target):
 
 class GNNDataset(InMemoryDataset):
 
-    def __init__(self, root, train=True, transform=None, pre_transform=None, pre_filter=None):
+    def __init__(self, root, transform=None, pre_transform=None, pre_filter=None):
         super().__init__(root, transform, pre_transform, pre_filter)
-        if train:
-            # print('In train')
-            self.data, self.slices = torch.load(self.processed_paths[0])
-            # print('In train 2')
-        else:
-            # print('In test')
-            self.data, self.slices = torch.load(self.processed_paths[1])
-            # print('In test 2')
-
 
     @property
     def raw_file_names(self):
-        return ['data_train.csv', 'data_test.csv', 'kiba_mapping.pt']
+        return []
 
     @property
-    def processed_file_names(self):
-        return ['processed_data_train.pt', 'processed_data_test.pt']
+    def processed_file_names(self):  
+        processed_dir_train = osp.join(self.root, 'processed', 'train')
+        processed_dir_val = osp.join(self.root, 'processed', 'val')
+        processed_dir_test = osp.join(self.root, 'processed', 'test')
+        os.makedirs(processed_dir_train, exist_ok=True)
+        os.makedirs(processed_dir_val, exist_ok=True)
+        os.makedirs(processed_dir_test, exist_ok=True)
+        return [osp.join(processed_dir_train, filename) for filename in os.listdir(processed_dir_train)] + \
+                [osp.join(processed_dir_val, filename) for filename in os.listdir(processed_dir_val)] + \
+                [osp.join(processed_dir_test, filename) for filename in os.listdir(processed_dir_test)]  
 
     def download(self):
         # Download to `self.raw_dir`.
@@ -70,80 +70,69 @@ class GNNDataset(InMemoryDataset):
         pass
 
 
-    def process_data(self, data_path, graph_dict):
-        df = pd.read_csv(data_path)
+    def process_data(self, df, graph_dict, split, save_dir):
+        for itr , row in tqdm(df.iterrows()):
+            smi = row['Drug']
+            # sequence = row['Target']
+            label = row['Y']
 
-        data_list = []
-        for _ , row in tqdm(df.iterrows()):
-            smi = row['compound_iso_smiles']
-            sequence = row['target_sequence']
-            label = row['affinity']
+            mol_graph = graph_dict[smi]
 
-            x, edge_index, edge_attr = graph_dict[smi]
-
-            # caution
-            x = (x - x.min()) / (x.max() - x.min())
-
-            mapping = torch.load(os.path.join(self.root, 'raw', self.raw_file_names[2]))
-            uniprot_id = mapping[sequence]
+            uniprot_id = row['Target_ID']
             protein_graph = uniprot_id_to_structure(uniprot_id)
-            
+                        
             # Get Labels
             try:
                 data = DATA.Data(
-                    x=x,
-                    edge_index=edge_index,
-                    edge_attr=edge_attr,
-                    y=torch.FloatTensor([label]),
-                    poh = protein_graph.one_hot_residues,
-                    pmf = protein_graph.meiler_features,
-                    pef = protein_graph.esm_embeddings,
-                    pea = protein_graph.edge_attr,
-                    pei = protein_graph.edge_index
+                    mol_graph = mol_graph,
+                    protein_graph = protein_graph,
+                    y = torch.tensor(label)
                 )
             except:
                     print("unable to process: ", smi)
+                    
+                    
+            if self.pre_filter is not None:
+                if not self.pre_filter(data):
+                    continue
 
-            data_list.append(data)
+            if self.pre_transform is not None:
+                data = self.pre_transform(data)
 
-        return data_list
+            torch.save(data, f'{save_dir}/processed_data_{split}_{itr}.pt')
+            itr+=1
+            exit()
+
+            
 
     def process(self):
-        df_train = pd.read_csv(self.raw_paths[0])
-        df_test = pd.read_csv(self.raw_paths[1])
-        df = pd.concat([df_train, df_test])
+        kiba = DTI('kiba')
+        kiba.convert_to_log()
+        split = kiba.get_split()
+        df_train = split['train']
+        df_val = split['valid']
+        df_test = split['test']
+        df = pd.concat([df_train, df_val, df_test])
 
-        smiles = df['compound_iso_smiles'].unique()
+        smiles = df['Drug'].unique()
         graph_dict = dict()
         for smile in tqdm(smiles, total=len(smiles)):
             mol = Chem.MolFromSmiles(smile)
             g = self.mol2graph(mol)
             graph_dict[smile] = g
 
-        train_list = self.process_data(self.raw_paths[0], graph_dict)
-        test_list = self.process_data(self.raw_paths[1], graph_dict)
+        save_dir_train = osp.join(self.root, 'processed', 'train')
+        os.makedirs(save_dir_train, exist_ok=True)
+        
+        save_dir_val = osp.join(self.root, 'processed', 'val')
+        os.makedirs(save_dir_val, exist_ok=True)
 
-        if self.pre_filter is not None:
-            train_list = [train for train in train_list if self.pre_filter(train)]
-            test_list = [test for test in test_list if self.pre_filter(test)]
+        save_dir_test = osp.join(self.root, 'processed', 'test')
+        os.makedirs(save_dir_test, exist_ok=True)
 
-        if self.pre_transform is not None:
-            train_list = [self.pre_transform(train) for train in train_list]
-            test_list = [self.pre_transform(test) for test in test_list]
-
-        print('Graph construction done. Saving to file.')
-
-        data, slices = self.collate(train_list)
-        # del train_list
-        # gc.collect(100)
-        # save preprocessed train data:
-        torch.save((data, slices), self.processed_paths[0])
-
-        data, slices = self.collate(test_list)
-        # del test_list
-        # gc.collect(130)
-        # save preprocessed test data:
-        torch.save((data, slices), self.processed_paths[1])
+        self.process_data(df_train, graph_dict, 'train', save_dir_train)
+        self.process_data(df_val, graph_dict, 'val', save_dir_val)
+        self.process_data(df_test, graph_dict, 'test', save_dir_test)
 
     def get_nodes(self, g):
         feat = []
@@ -246,3 +235,6 @@ class GNNDataset(InMemoryDataset):
 if __name__ == "__main__":
     # GNNDataset('data/davis')
     GNNDataset('data/kiba')
+    
+    
+    
