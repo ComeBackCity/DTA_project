@@ -1,34 +1,30 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import global_mean_pool
-from torch_geometric.nn.norm import BatchNorm
-import torch_geometric.nn as gnn
-from torch import Tensor
-from collections import OrderedDict
-from torch_geometric.utils import to_dense_adj, to_scipy_sparse_matrix
-import numpy as np
-from scipy.sparse.linalg import eigsh
+from torch_geometric.nn import MessagePassing
+from torch_geometric.utils import softmax
 
-# EGRET Layer Definition
-class EGRETLayer(nn.Module):
+class EGRETLayer(MessagePassing):
     def __init__(self, in_dim, out_dim, edge_dim, use_bias, config_dict=None):
-        super(EGRETLayer, self).__init__()
+        super(EGRETLayer, self).__init__(aggr='add')  # "Add" aggregation (Step 5).
+        
+        # experimental hyperparams
         self.apply_attention = True
         self.transform_edge_for_att_calc = False
         self.apply_attention_on_edge = False
         self.aggregate_edge = False
         self.edge_dependent_attention = False
-        self.self_loop = False  # or skip connection
+        self.self_loop = False
         self.self_node_transform = False and self.self_loop
         self.activation = None
+        
         if config_dict is not None:
             self.apply_attention = config_dict['apply_attention']
             self.transform_edge_for_att_calc = config_dict['transform_edge_for_att_calc']
             self.apply_attention_on_edge = config_dict['apply_attention_on_edge']
             self.aggregate_edge = config_dict['aggregate_edge']
             self.edge_dependent_attention = config_dict['edge_dependent_attention']
-            self.self_loop = config_dict['self_loop']  # or skip connection
+            self.self_loop = config_dict['self_loop']
             self.self_node_transform = config_dict['self_node_transform'] and self.self_loop
             self.activation = config_dict['activation']
             self.feat_drop = nn.Dropout(config_dict['feat_drop'])
@@ -36,24 +32,32 @@ class EGRETLayer(nn.Module):
             self.edge_feat_drop = nn.Dropout(config_dict['edge_feat_drop'])
             self.use_batch_norm = config_dict['use_batch_norm']
 
+        # equation (1)
         self.fc = nn.Linear(in_dim, out_dim, bias=use_bias)
         self.bn_fc = nn.BatchNorm1d(num_features=out_dim) if self.use_batch_norm else nn.Identity()
+        
+        # equation (2)
         if self.edge_dependent_attention:
             self.attn_fc = nn.Linear(2 * out_dim + edge_dim, 1, bias=use_bias)
         else:
             self.attn_fc = nn.Linear(2 * out_dim, 1, bias=use_bias)
+            
         if self.aggregate_edge:
             self.fc_edge = nn.Linear(edge_dim, out_dim, bias=use_bias)
             self.bn_fc_edge = nn.BatchNorm1d(num_features=out_dim) if self.use_batch_norm else nn.Identity()
+            
         if self.self_node_transform:
             self.fc_self = nn.Linear(in_dim, out_dim, bias=use_bias)
             self.bn_fc_self = nn.BatchNorm1d(num_features=out_dim) if self.use_batch_norm else nn.Identity()
+            
         if self.transform_edge_for_att_calc:
             self.fc_edge_for_att_calc = nn.Linear(edge_dim, edge_dim, bias=use_bias)
             self.bn_fc_edge_for_att_calc = nn.BatchNorm1d(num_features=edge_dim) if self.use_batch_norm else nn.Identity()
+        
         self.reset_parameters()
 
     def reset_parameters(self):
+        """Reinitialize learnable parameters."""
         gain = nn.init.calculate_gain('relu')
         nn.init.xavier_normal_(self.fc.weight, gain=gain)
         nn.init.xavier_normal_(self.attn_fc.weight, gain=gain)
@@ -64,76 +68,94 @@ class EGRETLayer(nn.Module):
         if self.transform_edge_for_att_calc:
             nn.init.xavier_normal_(self.fc_edge_for_att_calc.weight, gain=gain)
 
-    def edge_attention(self, edges):
+    def forward(self, x, edge_index, edge_attr):
+        x = self.feat_drop(x)
+        edge_attr = self.edge_feat_drop(edge_attr)
+        
+        # equation (1)
+        z = self.bn_fc(self.fc(x))
+        
+        # propagate_type: (x: Tensor, edge_attr: Tensor)
+        return self.propagate(edge_index, x=z, edge_attr=edge_attr, size=None)
+
+    def message(self, x_j, x_i, edge_attr):
+        # equation (2)
         if self.edge_dependent_attention:
             if self.transform_edge_for_att_calc:
-                z2 = torch.cat([edges.src['z'], edges.dst['z'], self.bn_fc_edge_for_att_calc(self.fc_edge_for_att_calc(edges.data['ex']))], dim=1)
-            else:
-                z2 = torch.cat([edges.src['z'], edges.dst['z'], edges.data['ex']], dim=1)
+                edge_attr = self.bn_fc_edge_for_att_calc(self.fc_edge_for_att_calc(edge_attr))
+            z2 = torch.cat([x_i, x_j, edge_attr], dim=1)
         else:
-            z2 = torch.cat([edges.src['z'], edges.dst['z']], dim=1)
+            z2 = torch.cat([x_i, x_j], dim=1)
+            
         a = self.attn_fc(z2)
-
+        
         if self.aggregate_edge:
-            ez = self.bn_fc_edge(self.fc_edge(edges.data['ex']))
-            return {'e': F.leaky_relu(a, negative_slope=0.2), 'ez': ez}
-        return {'e': F.leaky_relu(a)}
+            ez = self.bn_fc_edge(self.fc_edge(edge_attr))
+            return {'e': F.leaky_relu(a, negative_slope=0.2), 'ez': ez, 'x_j': x_j}
+        
+        return {'e': F.leaky_relu(a), 'x_j': x_j}
 
-    def message_func(self, edges):
-        if self.aggregate_edge:
-            return {'z': edges.src['z'], 'e': edges.data['e'], 'ez': edges.data['ez']}
+    def aggregate(self, inputs, index, ptr=None, dim_size=None):
+        alpha = None
+        if self.apply_attention:
+            alpha = self.attn_drop(softmax(inputs['e'], index, ptr, dim_size))
+            out = torch.sum(alpha * inputs['x_j'], dim=1)
         else:
-            return {'z': edges.src['z'], 'e': edges.data['e']}
-
-    def reduce_func(self, nodes):
-        if not self.apply_attention:
-            h = torch.sum(nodes.mailbox['z'], dim=1)
-        else:
-            alpha = self.attn_drop(F.softmax(nodes.mailbox['e'], dim=1))
-            h = torch.sum(alpha * nodes.mailbox['z'], dim=1)
+            out = torch.sum(inputs['x_j'], dim=1)
+        
         if self.aggregate_edge:
             if self.apply_attention_on_edge:
-                h = h + torch.sum(alpha * nodes.mailbox['ez'], dim=1)
+                out += torch.sum(alpha * inputs['ez'], dim=1)
             else:
-                h = h + torch.sum(nodes.mailbox['ez'], dim=1)
-        return {'h': h}
+                out += torch.sum(inputs['ez'], dim=1)
+        
+        return out
 
-    def forward(self, data):
-        edge_index = data.edge_index
-        edge_attr = data.edge_attr if 'edge_attr' in data else torch.ones(edge_index.size(1), 1, device=edge_index.device)
-
-        data.x = self.feat_drop(data.x)
-        edge_attr = self.edge_feat_drop(edge_attr)
-        data.z = self.bn_fc(self.fc(data.x))
-
-        edge_index, _ = gnn.utils.add_self_loops(edge_index, num_nodes=data.x.size(0))
-        data.edge_index = edge_index
-        data.edge_attr = edge_attr
-
-        row, col = edge_index
-        edge_idx = torch.arange(edge_index.size(1), device=edge_index.device)
-        data.z_col = data.z[col]
-        data.z_row = data.z[row]
-        data.z_edge = edge_attr
-        out = self.edge_attention(data)
-        edge_weight = out['e']
-        data.edge_attr = out['e']
-        if self.aggregate_edge:
-            data.edge_attr = out['ez']
-
-        data.edge_weight = edge_weight
-        data.x = gnn.utils.scatter_(gnn.utils.segment_sum, edge_weight.view(-1) * data.z[row], col, dim=0, dim_size=data.z.size(0))
+    def update(self, aggr_out, x):
         if self.self_loop:
-            data.x = data.x + data.z
-
+            if self.self_node_transform:
+                aggr_out += self.bn_fc_self(self.fc_self(x))
+            else:
+                aggr_out += x
+        
         if self.activation is not None:
-            data.x = self.activation(data.x)
-        return data
+            aggr_out = self.activation(aggr_out)
+        
+        return aggr_out
 
-# Laplacian Positional Encoding
-def laplacian_positional_encoding(data, num_positional_features):
-    adj = to_dense_adj(data.edge_index, max_num_nodes=data.num_nodes)[0]
-    L = np.diag(adj.sum(1).cpu()) - adj.cpu().numpy()
-    _, vec = eigsh(L, k=num_positional_features, which='SM')
-    data.pos = torch.from_numpy(vec).float().to(data.edge_index.device)
-    return data
+class MultiHeadEGRETLayer(nn.Module):
+    def __init__(self, in_dim, out_dim, edge_dim, num_heads, use_bias, merge='cat', config_dict=None):
+        super(MultiHeadEGRETLayer, self).__init__()
+        self.heads = nn.ModuleList()
+        for i in range(num_heads):
+            self.heads.append(EGRETLayer(in_dim, out_dim, edge_dim, use_bias, config_dict=config_dict))
+        self.merge = merge
+
+    def forward(self, x, edge_index, edge_attr):
+        head_outs_all = [attn_head(x, edge_index, edge_attr) for attn_head in self.heads]
+        head_outs = []
+        head_attn_scores = []
+        for x in head_outs_all:
+            head_outs += [x[0]]
+            head_attn_scores += [x[1].cpu().detach()]
+        if self.merge == 'cat':
+            return torch.cat(head_outs, dim=1), head_attn_scores
+        else:
+            return torch.mean(torch.stack(head_outs)), head_attn_scores
+
+config_dict = {
+    'use_batch_norm': False,
+    'feat_drop': 0.0,
+    'attn_drop': 0.0,
+    'edge_feat_drop': 0.0,
+    'hidden_dim': 32,
+    'out_dim': 32,
+    'apply_attention': True,
+    'transform_edge_for_att_calc': True,
+    'apply_attention_on_edge': True,
+    'aggregate_edge': True,
+    'edge_dependent_attention': True,
+    'self_loop': False,
+    'self_node_transform': True,
+    'activation': None
+}

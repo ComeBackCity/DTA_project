@@ -73,17 +73,21 @@ def main():
     data_root = params.get("data_root")
     fpath = os.path.join(data_root, DATASET)
 
-    train_set = GNNDataset(fpath, train=True)
-    test_set = GNNDataset(fpath, train=False)
+    train_set = GNNDataset(fpath, split='train')
+    val_set = GNNDataset(fpath, split='val')
 
-    print(len(train_set))
-    print(len(test_set))
+    train_loader = DataLoader(train_set, batch_size=params.get('batch_size'), shuffle=True, num_workers=8, collate_fn = collate)
+    val_loader = DataLoader(val_set, batch_size=params.get('batch_size'), shuffle=False, num_workers=8)
 
-    train_loader = DataLoader(train_set, batch_size=params.get('batch_size'), shuffle=True, num_workers=8)
-    test_loader = DataLoader(test_set, batch_size=params.get('batch_size'), shuffle=False, num_workers=8)
+    # for data in train_loader:
+    #     print(data[0].x.shape)
+
+    # print(len(train_set))
+    # print(len(val_set))
+    # exit()
 
     device = torch.device('cuda:0')
-    model = MGraphDTA(3, 25 + 1, embedding_size=128, filter_num=32, out_dim=1).to(device)
+    model = MGraphDTA(protein_feat_dim=1313, drug_feat_dim=22, out_dim=1).to(device)
 
     epochs = 100
     steps_per_epoch = 50
@@ -110,7 +114,7 @@ def main():
         for data in train_loader:
 
             global_step += 1       
-            data = data.to(device)
+            data = [data_elem.to(device) for data_elem in data]
             pred = model(data)
 
             loss = criterion(pred.view(-1), data.y.view(-1))

@@ -6,7 +6,8 @@ from torch.nn.modules.batchnorm import _BatchNorm
 import torch_geometric.nn as gnn
 from torch import Tensor
 from collections import OrderedDict
-from egret import EGRETLayer, laplacian_positional_encoding
+from egret import EGRETLayer, MultiHeadEGRETLayer, config_dict
+from mask_test import create_attention_mask
 
 
 '''
@@ -176,8 +177,7 @@ class DenseBlock(nn.ModuleDict):
 class GraphDenseNet(nn.Module):
     def __init__(self, num_input_features, out_dim, growth_rate=32, block_config = (3, 3, 3, 3), bn_sizes=[2, 3, 4, 4]):
         super().__init__()
-        self.features = nn.Sequential(OrderedDict([('conv0', GraphConvBn(num_input_features, 32))]))
-        num_input_features = 32
+        self.features = nn.Sequential(OrderedDict([('conv0', GraphConvBn(num_input_features, out_dim))]))
 
         for i, num_layers in enumerate(block_config):
             block = DenseBlock(
@@ -192,28 +192,87 @@ class GraphDenseNet(nn.Module):
 
         # self.classifer = nn.Linear(num_input_features, out_dim)
         self.sa = nn.MultiheadAttention(
-            embed_dim=num_input_features, 
+            embed_dim=out_dim, 
             num_heads=4, 
             dropout=0.2
         )
         
-        self.scaling_factor = nn.Parameter(torch.ones(2), requires_grad=True)
 
     def forward(self, data):
         data = self.features(data)
-        attn_feat = self.sa(data.x)
-        scaling_factor = self.scaling_factor / torch.sum(self.scaling_factor)
-        x = scaling_factor[0] * data.x + scaling_factor[1] * attn_feat
-        # x = gnn.global_mean_pool(data.x, data.batch)
-        # x = self.classifer(x)
+        attn_feat, _ = self.sa(data.x, data.x, data.x)
+        x = data.x + attn_feat
 
         return x
 
-class MGraphDTA(nn.Module):
-    def __init__(self, block_num, vocab_protein_size, embedding_size=128, filter_num=32, out_dim=1):
+class egretblock(nn.Module):
+    def __init__(self, in_dim, out_dim, edge_dim) -> None:
         super().__init__()
-        self.protein_encoder = GraphDenseNet(num_input_features=1280, out_dim=filter_num*3, block_config=[8, 8, 8], bn_sizes=[2, 2, 2])
-        self.ligand_encoder = GraphDenseNet(num_input_features=22, out_dim=filter_num*3, block_config=[8, 8, 8], bn_sizes=[2, 2, 2])
+        
+        config_dict['feat_drop'] = 0.2
+        config_dict['edge_feat_drop'] = 0.1
+        config_dict['attn_drop'] = 0.2
+        
+        self.egret_layer = MultiHeadEGRETLayer(in_dim, in_dim, edge_dim, 4, use_bias=True,
+                                               merge='mean', config_dict=config_dict)
+        
+        self.bn1 = NodeLevelBatchNorm(in_dim)
+        
+        
+        self.encoder = nn.Sequential(
+            nn.Linear(in_dim, out_dim),
+            nn.LeakyReLU(negative_slope=.01),
+            NodeLevelBatchNorm(num_features=out_dim,
+                           eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
+            nn.Dropout(.5)  # it was .2
+        )
+        
+        
+    def forward(self, x, edge_index, edge_attr):
+        
+        attn_feat, _ = self.egret_layer(x, edge_index, edge_attr)
+        x = self.bn1(x + attn_feat)
+        x = self.encoder(x)
+        
+    
+    
+class ProteinEncoder(nn.Module):
+    def __init__(self, in_dim, out_dim) -> None:
+        super().__init__()
+        
+        self.em1 = egretblock(in_dim=in_dim, out_dim=512, edge_dim=6)
+        self.em2 = egretblock(in_dim=512, out_dim=out_dim, edge_dim=6)
+        
+        
+    def forward(self, x, edge_index, edge_attr): 
+        
+        x = self.em1(x, edge_index, edge_attr)
+        x = self.em2(x, edge_index, edge_attr)
+        
+        return x
+    
+class LigandEncoder(nn.Module):
+    def __init__(self, in_dim, out_dim) -> None:
+        super().__init__()
+        
+        self.lin = nn.Linear(in_features=in_dim, out_features=512)
+        self.em = egretblock(in_dim=in_dim, out_dim=out_dim, edge_dim=6)
+        
+        
+    def forward(self, x, edge_index, edge_attr): 
+        
+        x = F.leaky_relu(self.lin(x, edge_index, edge_attr), negative_slope=0.01)
+        x = self.em(x, edge_index, edge_attr)
+        
+        return x
+
+class MGraphDTA(nn.Module):
+    def __init__(self, protein_feat_dim, drug_feat_dim, filter_num=32, out_dim=1):
+        super().__init__()
+        # self.protein_encoder = GraphDenseNet(num_input_features=protein_feat_dim, out_dim=filter_num*3, block_config=[8, 8, 8], bn_sizes=[2, 2, 2])
+        # self.ligand_encoder = GraphDenseNet(num_input_features=drug_feat_dim, out_dim=filter_num*3, block_config=[8, 8, 8], bn_sizes=[2, 2, 2])
+        self.protein_encoder = ProteinEncoder(protein_feat_dim, filter_num * 3)
+        self.ligand_encoder = LigandEncoder(drug_feat_dim, filter_num * 3)
         self.cross_attn1 = nn.MultiheadAttention(
             embed_dim=filter_num * 3, 
             num_heads=4, 
@@ -240,15 +299,19 @@ class MGraphDTA(nn.Module):
         )
 
     def forward(self, data):
-        target = data.target
-        protein_x = self.ligand_encoder(data)
-        ligand_x = self.ligand_encoder(data)
+        
+        protein = data[1]
+        drug = data[0]
+        
+        protein_x = self.protein_encoder(protein.x, protein.edge_index, protein.edge_attr)
+        ligand_x = self.ligand_encoder(drug.x, drug.edge_index, drug.edge_attr)
+        
+        print(protein_x.shape)
+        print(ligand_x.shape)
         
         attn_feat1 = self.cross_attn1(protein_x, ligand_x, ligand_x)
         attn_feat2 = self.cross_attn1(ligand_x, protein_x, protein_x)
         
-        print(protein_x.shape)
-        print(ligand_x.shape)
         print(attn_feat1.shape)
         print(attn_feat2.shape)
         exit()

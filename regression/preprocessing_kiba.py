@@ -124,6 +124,7 @@ class GNNDataset(InMemoryDataset):
         for smile in tqdm(smiles, total=len(smiles)):
             mol = Chem.MolFromSmiles(smile)
             g = self.mol2graph(mol)
+            g = DATA.Data(x=g[0], edge_index=g[1], edge_attr=g[2])
             graph_dict[smile] = g
 
         save_dir_train = osp.join(self.root, 'processed', 'train')
