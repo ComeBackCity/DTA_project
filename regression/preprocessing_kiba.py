@@ -82,12 +82,8 @@ class GNNDataset(InMemoryDataset):
                 mapping = pickle.load(f)
                 
             header = mapping[sequence]
-            if "358" in header:
-                file_name = "3mtl.pdb"
-            else:
-                file_name = f"./data/alphafold2/kiba/{header}/{header}_unrelaxed_rank_001_alphafold2_ptm_model_2_seed_000.pdb"
+            file_name = f"./data/alphafold2/kiba/{header}/{header}_unrelaxed_rank_001_alphafold2_ptm_model_2_seed_000.pdb"
 
-            # uniprot_id = row['Target_ID']
             protein_graph = uniprot_id_to_structure(file_name)
                         
             # Get Labels

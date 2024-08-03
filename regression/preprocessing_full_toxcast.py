@@ -72,14 +72,19 @@ class GNNDataset(InMemoryDataset):
 
     def process_data(self, df, graph_dict, split, save_dir):
         for itr , row in tqdm(df.iterrows()):
-            smi = row['Drug']
-            # sequence = row['Target']
-            label = row['Y']
+            smi = row['smiles']
+            sequence = row['sequence']
+            label = row['label']
 
             mol_graph = graph_dict[smi]
+            
+            with open("data/full_toxcast_mapping.pkl", "rb") as f:
+                mapping = pickle.load(f)
+                
+            header = mapping[sequence]
+            file_name = f"./data/alphafold2/full_toxcast/{header}/{header}_unrelaxed_rank_001_alphafold2_ptm_model_1_seed_000.pdb"
 
-            uniprot_id = row['Target_ID']
-            protein_graph = uniprot_id_to_structure(uniprot_id)
+            protein_graph = uniprot_id_to_structure(file_name)
                         
             # Get Labels
             try:
@@ -106,15 +111,11 @@ class GNNDataset(InMemoryDataset):
             
 
     def process(self):
-        kiba = DTI('kiba')
-        kiba.convert_to_log()
-        split = kiba.get_split()
-        df_train = split['train']
-        df_val = split['valid']
-        df_test = split['test']
-        df = pd.concat([df_train, df_val, df_test])
+        df_train = pd.read_csv("./data/full_toxcast/raw/data_train.csv")
+        df_test = pd.read_csv("./data/full_toxcast/raw/data_test.csv")
+        df = pd.concat([df_train, df_test])
 
-        smiles = df['Drug'].unique()
+        smiles = df['smiles'].unique()
         graph_dict = dict()
         for smile in tqdm(smiles, total=len(smiles)):
             mol = Chem.MolFromSmiles(smile)
@@ -123,15 +124,11 @@ class GNNDataset(InMemoryDataset):
 
         save_dir_train = osp.join(self.root, 'processed', 'train')
         os.makedirs(save_dir_train, exist_ok=True)
-        
-        save_dir_val = osp.join(self.root, 'processed', 'val')
-        os.makedirs(save_dir_val, exist_ok=True)
 
         save_dir_test = osp.join(self.root, 'processed', 'test')
         os.makedirs(save_dir_test, exist_ok=True)
 
         self.process_data(df_train, graph_dict, 'train', save_dir_train)
-        self.process_data(df_val, graph_dict, 'val', save_dir_val)
         self.process_data(df_test, graph_dict, 'test', save_dir_test)
 
     def get_nodes(self, g):
@@ -233,8 +230,7 @@ class GNNDataset(InMemoryDataset):
         return node_attr, edge_index, edge_attr
 
 if __name__ == "__main__":
-    # GNNDataset('data/davis')
-    GNNDataset('data/kiba')
+    GNNDataset('data/full_toxcast')
     
     
     
