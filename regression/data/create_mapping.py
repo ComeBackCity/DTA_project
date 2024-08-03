@@ -16,13 +16,13 @@ def read_single_sequence_fasta(file_path):
     return header, sequence
 
 if __name__ == "__main__":
-    all_fastas = os.listdir("fastas/full_toxcast")
+    all_fastas = os.listdir("fastas/kiba")
     mapping = {}
     for file_name in all_fastas:
-        header, seq = read_single_sequence_fasta(os.path.join("fastas/full_toxcast", file_name))
-        mapping = {seq : header}
+        header, seq = read_single_sequence_fasta(os.path.join("fastas/kiba", file_name))
+        mapping.update({seq : header})
         
-    with open("full_toxcast_mapping.pkl", "wb") as f:
+    with open("kiba_mapping.pkl", "wb") as f:
         pickle.dump(mapping, f)
         
         

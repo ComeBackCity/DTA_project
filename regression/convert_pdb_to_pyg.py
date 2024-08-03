@@ -99,7 +99,7 @@ def convert_nx_to_pyg(nx_graph):
     return data
 
 
-def uniprot_id_to_structure(id):
+def uniprot_id_to_structure(file_path):
     params_to_change = {
         "granularity": "CA",
         "edge_construction_functions": [
@@ -124,7 +124,8 @@ def uniprot_id_to_structure(id):
     )
     config.dict()
 
-    g = construct_graph(config=config, path=f"./data/alphafold_structures/kiba/AF-{id}-F1-model_v4.pdb")
+    g = construct_graph(config=config, path=file_path)
+    # g = construct_graph(config=config, path=f"./data/alphafold_structures/kiba/AF-{id}-F1-model_v4.pdb")
     add_beta_carbon_vector(g)
     add_sequence_neighbour_vector(g)
     pg = convert_nx_to_pyg(g)
