@@ -115,7 +115,7 @@ class GNNDataset(InMemoryDataset):
 
     def process(self):
         davis = DTI('davis')
-        davis.convert_to_log()
+        davis.convert_to_log("binding")
         split = davis.get_split()
         df_train = split['train']
         df_val = split['valid']

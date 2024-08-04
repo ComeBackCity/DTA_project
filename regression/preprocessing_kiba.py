@@ -112,7 +112,7 @@ class GNNDataset(InMemoryDataset):
 
     def process(self):
         kiba = DTI('kiba')
-        kiba.convert_to_log()
+        kiba.convert_to_log("binding")
         split = kiba.get_split()
         df_train = split['train']
         df_val = split['valid']

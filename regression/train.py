@@ -10,30 +10,34 @@ import torch.nn as nn
 from torch_geometric.loader import DataLoader
 import torch.nn.functional as F
 import argparse
-from metrics import get_cindex
+# from metrics import get_cindex
 from dataset_new import *
 # from model import MGraphDTA
 from model import MGraphDTA
 from utils import *
 from log.train_logger import TrainLogger
+from torchmetrics.regression import ConcordanceCorrCoef
 
+@torch.no_grad()
 def val(model, criterion, dataloader, device):
     model.eval()
     running_loss = AverageMeter()
 
     for data in dataloader:
-        data = data.to(device)
-
+        data = [data_elem.to(device) for data_elem in data]
+        
+        y = data[2]
+        
         with torch.no_grad():
             pred = model(data)
-            loss = criterion(pred.view(-1), data.y.view(-1))
-            label = data.y
+            print(pred)
+            loss = criterion(pred.view(-1), y.view(-1))
+            label = y
             running_loss.update(loss.item(), label.size(0))
+            
 
     epoch_loss = running_loss.get_average()
     running_loss.reset()
-
-    model.train()
 
     return epoch_loss
 
@@ -87,10 +91,15 @@ def main():
     # exit()
 
     device = torch.device('cuda:0')
-    model = MGraphDTA(protein_feat_dim=1313, drug_feat_dim=22, out_dim=1).to(device)
+    
+    # metrics
+    get_cindex = ConcordanceCorrCoef().to(device)
+
+    model = MGraphDTA(protein_feat_dim=1313, drug_feat_dim=22, 
+                      protein_edge_dim=6, drug_edge_dim=6, out_dim=1).to(device)
 
     epochs = 100
-    steps_per_epoch = 50
+    steps_per_epoch = 100
     num_iter = math.ceil((epochs * steps_per_epoch) / len(train_loader))
     break_flag = False
 
@@ -116,16 +125,19 @@ def main():
             global_step += 1       
             data = [data_elem.to(device) for data_elem in data]
             pred = model(data)
+            
+            y = data[2]
 
-            loss = criterion(pred.view(-1), data.y.view(-1))
-            cindex = get_cindex(data.y.detach().cpu().numpy().reshape(-1), pred.detach().cpu().numpy().reshape(-1))
+            loss = criterion(pred.view(-1), y.view(-1))
+            # cindex = get_cindex(y.detach().cpu().numpy().reshape(-1), pred.detach().cpu().numpy().reshape(-1))
+            cindex = get_cindex(pred.view(-1), y.view(-1))
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-            running_loss.update(loss.item(), data.y.size(0)) 
-            running_cindex.update(cindex, data.y.size(0))
+            running_loss.update(loss.item(), y.size(0)) 
+            running_cindex.update(cindex, y.size(0))
 
             if global_step % steps_per_epoch == 0:
 
@@ -136,7 +148,7 @@ def main():
                 running_loss.reset()
                 running_cindex.reset()
 
-                test_loss = val(model, criterion, test_loader, device)
+                test_loss = val(model, criterion, val_loader, device)
 
                 msg = "epoch-%d, loss-%.4f, cindex-%.4f, test_loss-%.4f" % (global_epoch, epoch_loss, epoch_cindex, test_loss)
                 logger.info(msg)
