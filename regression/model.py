@@ -235,21 +235,21 @@ class egretblock(nn.Module):
         x = self.encoder(x)
         
         return x
-        
-    
+         
     
 class ProteinEncoder(nn.Module):
     def __init__(self, in_dim, out_dim, edge_dim) -> None:
         super().__init__()
         
-        self.em1 = egretblock(in_dim=in_dim, out_dim=512, edge_dim=edge_dim, num_heads=4)
-        self.em2 = egretblock(in_dim=512, out_dim=out_dim, edge_dim=edge_dim, num_heads=4)
-        
+        self.em1 = egretblock(in_dim=in_dim, out_dim=1024, edge_dim=edge_dim, num_heads=4)
+        self.em2 = egretblock(in_dim=1024, out_dim=512, edge_dim=edge_dim, num_heads=4)
+        self.em3 = egretblock(in_dim=512, out_dim=out_dim, edge_dim=edge_dim, num_heads=4)      
         
     def forward(self, x, edge_index, edge_attr): 
         
         x = self.em1(x, edge_index, edge_attr)
         x = self.em2(x, edge_index, edge_attr)
+        x = self.em3(x, edge_index, edge_attr)
         
         return x
     
@@ -302,8 +302,11 @@ class MGraphDTA(nn.Module):
         protein_x = self.protein_encoder(protein.x, protein.edge_index, protein.edge_attr)
         ligand_x = self.ligand_encoder(drug.x, drug.edge_index, drug.edge_attr)
         
-        attn_feat1, _ = self.cross_attn1(protein_x, ligand_x, ligand_x)
-        attn_feat2, _ = self.cross_attn1(ligand_x, protein_x, protein_x)
+        attn_mask1 = create_attention_mask(protein.batch, drug.batch)
+        attn_mask2 = create_attention_mask(drug.batch, protein.batch)
+        
+        attn_feat1, _ = self.cross_attn1(protein_x, ligand_x, ligand_x, attn_mask=attn_mask1)
+        attn_feat2, _ = self.cross_attn1(ligand_x, protein_x, protein_x, attn_mask=attn_mask2)
         
         feat1 = gnn.global_mean_pool(attn_feat1, protein.batch)
         feat2 = gnn.global_mean_pool(attn_feat2, drug.batch)

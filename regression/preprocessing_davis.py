@@ -19,6 +19,7 @@ sys.path.append("../")
 from convert_pdb_to_pyg import uniprot_id_to_structure
 import gc
 import pickle
+import gc
 fdef_name = osp.join(RDConfig.RDDataDir, 'BaseFeatures.fdef')
 chem_feature_factory = ChemicalFeatures.BuildFeatureFactory(fdef_name)
 
@@ -81,10 +82,18 @@ class GNNDataset(InMemoryDataset):
                 
             header = mapping[sequence]
             if "358" in header:
-                file_name = "3mtl.pdb"
+                file_pattern = re.compile(rf"3mtl.pdb")
             else:
-                file_name = f"./data/alphafold2/davis/{header}/{header}_unrelaxed_rank_001_alphafold2_ptm_model_2_seed_000.pdb"
+                file_pattern = re.compile(rf"{header}_unrelaxed_rank_001_.*\.pdb")
 
+            directory = f"./data/alphafold2/davis/{header}/"
+            files = os.listdir(directory)
+            
+            for f in files:
+                if file_pattern.match(f):
+                    file_name = os.path.join(directory, f)
+                    break        
+            
             mol_graph = graph_dict[smi]
 
             protein_graph = uniprot_id_to_structure(file_path=file_name)
@@ -109,9 +118,9 @@ class GNNDataset(InMemoryDataset):
 
             torch.save(data, f'{save_dir}/processed_data_{split}_{itr}.pt')
             itr+=1
-            exit()
-
             
+            del data
+            gc.collect()            
 
     def process(self):
         davis = DTI('davis')

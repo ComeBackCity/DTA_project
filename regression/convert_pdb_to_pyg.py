@@ -106,7 +106,7 @@ def uniprot_id_to_structure(file_path):
             add_peptide_bonds, 
             add_hydrogen_bond_interactions,
             add_cation_pi_interactions,
-            partial(add_k_nn_edges, k=10),
+            partial(add_k_nn_edges, k=8),
             add_distance_to_edges,
         ],
         "graph_metadata_functions": [

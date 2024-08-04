@@ -29,6 +29,8 @@ class GNNDataset(Dataset):
 def collate(data_list):
     batchA = Batch.from_data_list([data[0] for data in data_list])
     batchB = Batch.from_data_list([data[1] for data in data_list])
+    
+    batchA.x 
     # batchB.x[]
     return batchA, batchB
 
