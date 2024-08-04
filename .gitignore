@@ -11,3 +11,5 @@ filtered_davis/
 notable_results.txt
 protT5/
 regression/data/alphafold2
+regression/data/*_molecule.pkl
+regression/data/*/protein_graphs/

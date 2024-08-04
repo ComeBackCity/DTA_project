@@ -3,17 +3,27 @@ from torch.utils.data import Dataset
 from torch_geometric.data import Batch
 import os.path as osp
 import os
+import pandas as pd
 
 class GNNDataset(Dataset):
 
-    def __init__(self, root, split='train'):
+    def __init__(self, root, dataset_name, split='train'):
+        super().__init__()
         self.split = split
         self.root = root
-        super().__init__()
+        self.dataset_name = dataset_name
+        if self.dataset_name == "davis" or self.dataset_name == 'kiba':
+            df = DTI(self.dataset_name)
+            df.convert_to_log("binding")
+            split = davis.get_split()
+            self.df = split(self.split)
+        elif self.dataset_name == "full_toxcast":
+            self.df = pd.read_csv(f"./data/full_toxcast/raw/data_{self.split}.csv")
+            
+        with open("")
 
     def __len__(self):
-        processed_dir = osp.join(self.root, 'processed', self.split)
-        return len(os.listdir(processed_dir))
+        return df.shape[0]
     
     def __getitem__(self, idx):
         data = torch.load(osp.join(f"{self.root}/processed", f'{self.split}/processed_data_{self.split}_{idx}.pt'))

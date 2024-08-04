@@ -18,6 +18,14 @@ from utils import *
 from log.train_logger import TrainLogger
 from torchmetrics.regression import ConcordanceCorrCoef
 
+def setup_seed(seed):
+    random.seed(seed)                          
+    np.random.seed(seed)                       
+    torch.manual_seed(seed)                    
+    torch.cuda.manual_seed(seed)               
+    torch.cuda.manual_seed_all(seed)           
+    torch.backends.cudnn.deterministic = True  
+
 @torch.no_grad()
 def val(model, criterion, dataloader, device):
     model.eval()
@@ -40,14 +48,6 @@ def val(model, criterion, dataloader, device):
     running_loss.reset()
 
     return epoch_loss
-
-def setup_seed(seed):
-    random.seed(seed)                          
-    np.random.seed(seed)                       
-    torch.manual_seed(seed)                    
-    torch.cuda.manual_seed(seed)               
-    torch.cuda.manual_seed_all(seed)           
-    torch.backends.cudnn.deterministic = True  
 
 def main():
     parser = argparse.ArgumentParser()

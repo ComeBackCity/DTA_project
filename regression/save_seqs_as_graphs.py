@@ -1,0 +1,83 @@
+import os.path as osp
+import numpy as np
+import torch
+import os
+import pandas as pd
+from torch_geometric.data import InMemoryDataset
+from torch_geometric import data as DATA
+from rdkit import Chem
+from rdkit.Chem import MolFromSmiles
+import networkx as nx
+from rdkit import Chem
+from rdkit.Chem import ChemicalFeatures
+from rdkit import RDConfig
+from tqdm import tqdm
+import re
+from tdc.multi_pred import DTI
+import sys
+sys.path.append("../")
+from convert_pdb_to_pyg import uniprot_id_to_structure
+import gc
+import pickle
+import gc
+import random
+fdef_name = osp.join(RDConfig.RDDataDir, 'BaseFeatures.fdef')
+chem_feature_factory = ChemicalFeatures.BuildFeatureFactory(fdef_name)
+
+
+'''
+Note that training and test datasets are the same as GraphDTA
+Please see: https://github.com/thinng/GraphDTA
+'''
+
+def setup_seed(seed):
+    random.seed(seed)                          
+    np.random.seed(seed)                       
+    torch.manual_seed(seed)                    
+    torch.cuda.manual_seed(seed)               
+    torch.cuda.manual_seed_all(seed)           
+    torch.backends.cudnn.deterministic = True  
+
+def get_pattern(dataset, header):
+    if dataset == "davis" and "358" in header:
+        file_pattern = re.compile(rf"3mtl.pdb")
+    else: 
+        file_pattern = re.compile(rf"{header}_unrelaxed_rank_001_.*\.pdb")
+        
+    return file_pattern
+
+def process_data(dataset):
+    with open(f"data/{dataset}_mapping.pkl", "rb") as f:
+        mapping = pickle.load(f)
+        
+    save_dir = f"./data/{dataset}/protein_graphs/"
+    
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    
+    for _, header in mapping.items():
+        
+        directory = f"./data/alphafold2/{dataset}/{header}/"
+        files = os.listdir(directory) 
+        
+        file_pattern = get_pattern(dataset, header)
+        for f in files:
+            if file_pattern.match(f):
+                file_name = os.path.join(directory, f)
+                break  
+        
+        protein_graph = uniprot_id_to_structure(file_path=file_name)
+    
+        with open(os.path.join(save_dir, f"{header}.pkl"), "wb") as f:
+            pickle.dump(protein_graph, f)
+    
+        gc.collect()            
+
+
+if __name__ == "__main__":
+    setup_seed(100)
+    # process_data("davis")
+    process_data("kiba")
+    process_data("full_toxcast")
+    
+    
