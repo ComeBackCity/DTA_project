@@ -16,7 +16,6 @@ import re
 from tdc.multi_pred import DTI
 import sys
 sys.path.append("../")
-from convert_pdb_to_pyg import uniprot_id_to_structure
 import gc
 import pickle
 import gc
@@ -30,6 +29,21 @@ chem_feature_factory = ChemicalFeatures.BuildFeatureFactory(fdef_name)
 Note that training and test datasets are the same as GraphDTA
 Please see: https://github.com/thinng/GraphDTA
 '''
+
+atomic_properties = {
+    'H': {'atomic_mass': 1.008, 'a_num': 1},
+    'B': {'atomic_mass': 10.81, 'a_num': 5},
+    'C': {'atomic_mass': 12.011, 'a_num': 6},
+    'N': {'atomic_mass': 14.007, 'a_num': 7},
+    'O': {'atomic_mass': 15.999, 'a_num': 8},
+    'F': {'atomic_mass': 18.998, 'a_num': 9},
+    'Si': {'atomic_mass': 28.085, 'a_num': 14},
+    'P': {'atomic_mass': 30.974, 'a_num': 15},
+    'Cl': {'atomic_mass': 35.45, 'a_num': 17},
+    'S': {'atomic_mass': 32.06, 'a_num': 16},
+    'Br': {'atomic_mass': 79.904, 'a_num': 35},
+    'I': {'atomic_mass': 126.904, 'a_num': 53}
+}
 
 def setup_seed(seed):
     random.seed(seed)                          
@@ -68,10 +82,11 @@ def process(dataset_name):
 
 def get_nodes(g):
     feat = []
+    
     for n, d in g.nodes(data=True):
         h_t = []
-        h_t += [int(d['a_type'] == x) for x in ['H', 'C', 'N', 'O', 'F', 'Cl', 'S', 'Br', 'I', ]]
-        h_t.append(d['a_num'])
+        h_t += [int(d['a_type'] == x) for x in ['H', 'B', 'C', 'N', 'O', 'F', 
+                                                'Si', 'P', 'Cl', 'S', 'Br', 'I']]
         h_t.append(d['acceptor'])
         h_t.append(d['donor'])
         h_t.append(int(d['aromatic']))
@@ -79,13 +94,21 @@ def get_nodes(g):
                 for x in (Chem.rdchem.HybridizationType.SP, \
                             Chem.rdchem.HybridizationType.SP2,
                             Chem.rdchem.HybridizationType.SP3)]
-        h_t.append(d['num_h'])
+        
         # 5 more
+        h_t.append(int(d['isInRing']))
+        h_t.append(d['num_h'])
         h_t.append(d['ExplicitValence'])
         h_t.append(d['FormalCharge'])
         h_t.append(d['ImplicitValence'])
         h_t.append(d['NumExplicitHs'])
         h_t.append(d['NumRadicalElectrons'])
+        
+        # Use the standard atomic mass and number
+        atomic_mass = atomic_properties[d['a_type']]['atomic_mass']
+        a_num = atomic_properties[d['a_type']]['a_num']
+        h_t.append(atomic_mass)
+        h_t.append(a_num)
         feat.append((n, h_t))
     feat.sort(key=lambda item: item[0])
     node_attr = torch.FloatTensor([item[1] for item in feat])
@@ -101,8 +124,8 @@ def get_edges(g):
                             Chem.rdchem.BondType.TRIPLE, \
                             Chem.rdchem.BondType.AROMATIC)]
 
-        e_t.append(int(d['IsConjugated'] == False))
-        e_t.append(int(d['IsConjugated'] == True))
+        e_t.append(int(d['IsConjugated']))
+        e_t.append(int(d['IsAromatic']))
         e[(n1, n2)] = e_t
 
     if len(e) == 0:
@@ -129,13 +152,15 @@ def mol2graph(mol):
                     aromatic=atom_i.GetIsAromatic(),
                     hybridization=atom_i.GetHybridization(),
                     num_h=atom_i.GetTotalNumHs(),
-
+                    atomic_mass=atom_i.GetMass(),
                     # 5 more node features
                     ExplicitValence=atom_i.GetExplicitValence(),
                     FormalCharge=atom_i.GetFormalCharge(),
                     ImplicitValence=atom_i.GetImplicitValence(),
                     NumExplicitHs=atom_i.GetNumExplicitHs(),
+                    NumImplicitHs=atom_i.GetNumImplicitHs(),
                     NumRadicalElectrons=atom_i.GetNumRadicalElectrons(),
+                    isInRing=atom_i.IsInRing()
                     )
 
     for i in range(len(feats)):
@@ -156,7 +181,8 @@ def mol2graph(mol):
                 g.add_edge(i, j,
                             b_type=e_ij.GetBondType(),
                             # 1 more edge features 2 dim
-                            IsConjugated=int(e_ij.GetIsConjugated()),
+                            IsConjugated=e_ij.GetIsConjugated(),
+                            IsAromatic=e_ij.GetIsAromatic()
                             )
 
     node_attr = get_nodes(g)

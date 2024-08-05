@@ -21,6 +21,7 @@ import gc
 import pickle
 import gc
 import random
+from esm2_feature import load_esm2_model, get_esm2_embeddings
 fdef_name = osp.join(RDConfig.RDDataDir, 'BaseFeatures.fdef')
 chem_feature_factory = ChemicalFeatures.BuildFeatureFactory(fdef_name)
 
@@ -47,6 +48,9 @@ def get_pattern(dataset, header):
     return file_pattern
 
 def process_data(dataset):
+    
+    tokenizer, model, device = load_esm2_model()
+    
     with open(f"data/{dataset}_mapping.pkl", "rb") as f:
         mapping = pickle.load(f)
         
@@ -55,20 +59,26 @@ def process_data(dataset):
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
     
-    for _, header in mapping.items():
+    for sequence, header in mapping.items():
         
         directory = f"./data/alphafold2/{dataset}/{header}/"
         files = os.listdir(directory) 
+        save_path = os.path.join(save_dir, f"{header}.pkl")
+        
+        if os.path.exists(save_path):
+            continue
         
         file_pattern = get_pattern(dataset, header)
         for f in files:
             if file_pattern.match(f):
                 file_name = os.path.join(directory, f)
                 break  
+            
+        embeddings = get_esm2_embeddings(sequence, tokenizer, model, device)
         
-        protein_graph = uniprot_id_to_structure(file_path=file_name)
+        protein_graph = uniprot_id_to_structure(file_path=file_name, embeddings = embeddings)
     
-        with open(os.path.join(save_dir, f"{header}.pkl"), "wb") as f:
+        with open(save_path, "wb") as f:
             pickle.dump(protein_graph, f)
     
         gc.collect()            
@@ -76,7 +86,7 @@ def process_data(dataset):
 
 if __name__ == "__main__":
     setup_seed(100)
-    # process_data("davis")
+    process_data("davis")
     process_data("kiba")
     process_data("full_toxcast")
     

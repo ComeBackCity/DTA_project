@@ -13,3 +13,10 @@ protT5/
 regression/data/alphafold2
 regression/data/*_molecule.pkl
 regression/data/*/protein_graphs/
+
+regression/data/davis_mostats.pkl
+regression/data/davis_stats.pkl
+regression/data/full_toxcast_mostats.pkl
+regression/data/full_toxcast_stats.pkl
+regression/data/kiba_mostats.pkl
+regression/data/kiba_stats.pkl

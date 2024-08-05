@@ -8,7 +8,7 @@ from torch import Tensor
 from collections import OrderedDict
 from egret import EGRETLayer, MultiHeadEGRETLayer, config_dict
 from mask_test import create_attention_mask
-
+from pe import apply_positional_encoding_to_batch, PositionalEncoding
 
 '''
 MGraphDTA: Deep Multiscale Graph Neural Network for Explainable Drug-target binding affinity Prediction
@@ -209,29 +209,39 @@ class egretblock(nn.Module):
     def __init__(self, in_dim, out_dim, edge_dim, num_heads=1) -> None:
         super().__init__()
         
-        config_dict['feat_drop'] = 0.2
-        config_dict['edge_feat_drop'] = 0.1
-        config_dict['attn_drop'] = 0.2
+        # config_dict['feat_drop'] = 0.5
+        # config_dict['edge_feat_drop'] = 0.5
+        # config_dict['attn_drop'] = 0.5
         
-        self.egret_layer = MultiHeadEGRETLayer(in_dim, in_dim, edge_dim, num_heads, use_bias=True,
-                                               merge='mean', config_dict=config_dict)
+        # self.egret_layer = MultiHeadEGRETLayer(in_dim, in_dim, edge_dim, num_heads, use_bias=True,
+        #                                        merge='mean', config_dict=config_dict)
+        
+        self.egret_layer = gnn.GATv2Conv(in_channels=in_dim, 
+                                        out_channels=in_dim, 
+                                        heads=num_heads,
+                                        concat=False, 
+                                        negative_slope=0.2, 
+                                        dropout=0.2, add_self_loops = True, 
+                                        edge_dim=edge_dim, fill_value = 'mean', bias = True)
         
         self.bn1 = NodeLevelBatchNorm(in_dim)
-        
+        self.weight = nn.Parameter(torch.randn(2))
         
         self.encoder = nn.Sequential(
             nn.Linear(in_dim, out_dim),
-            nn.LeakyReLU(negative_slope=.01),
+            nn.LeakyReLU(),
+            nn.Dropout(0.2),
             NodeLevelBatchNorm(num_features=out_dim,
                            eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
-            nn.Dropout(.5)  # it was .2
         )
         
         
     def forward(self, x, edge_index, edge_attr):
         
-        attn_feat, _ = self.egret_layer(x, edge_index, edge_attr)
-        x = self.bn1(x + attn_feat)
+        attn_feat = self.egret_layer(x, edge_index, edge_attr)
+        w = self.weight.softmax(-1)
+        x = w[0] * x + w[1] * attn_feat
+        x = self.bn1(x)
         x = self.encoder(x)
         
         return x
@@ -243,7 +253,7 @@ class ProteinEncoder(nn.Module):
         
         self.em1 = egretblock(in_dim=in_dim, out_dim=1024, edge_dim=edge_dim, num_heads=4)
         self.em2 = egretblock(in_dim=1024, out_dim=512, edge_dim=edge_dim, num_heads=4)
-        self.em3 = egretblock(in_dim=512, out_dim=out_dim, edge_dim=edge_dim, num_heads=4)      
+        self.em3 = egretblock(in_dim=512, out_dim=out_dim, edge_dim=edge_dim, num_heads=4)
         
     def forward(self, x, edge_index, edge_attr): 
         
@@ -257,13 +267,14 @@ class LigandEncoder(nn.Module):
     def __init__(self, in_dim, out_dim, edge_dim) -> None:
         super().__init__()
         
-        self.lin = nn.Linear(in_features=in_dim, out_features=512)
-        self.em = egretblock(in_dim=512, out_dim=out_dim, edge_dim=edge_dim, num_heads=4)
+        # self.lin = nn.Linear(in_features=in_dim, out_features=512)
+        # self.dropout = nn.Dropout(.2)
+        self.em = egretblock(in_dim=in_dim, out_dim=out_dim, edge_dim=edge_dim, num_heads=4)
         
         
     def forward(self, x, edge_index, edge_attr): 
         
-        x = F.leaky_relu(self.lin(x), negative_slope=0.01)
+        # x = self.dropout(F.leaky_relu(self.lin(x), negative_slope=0.01))
         x = self.em(x, edge_index, edge_attr)
         
         return x
@@ -273,45 +284,65 @@ class MGraphDTA(nn.Module):
         super().__init__()
         # self.protein_encoder = GraphDenseNet(num_input_features=protein_feat_dim, out_dim=filter_num*3, block_config=[8, 8, 8], bn_sizes=[2, 2, 2])
         # self.ligand_encoder = GraphDenseNet(num_input_features=drug_feat_dim, out_dim=filter_num*3, block_config=[8, 8, 8], bn_sizes=[2, 2, 2])
-        self.protein_encoder = ProteinEncoder(protein_feat_dim, filter_num * 3, protein_edge_dim)
-        self.ligand_encoder = LigandEncoder(drug_feat_dim, filter_num * 3, drug_edge_dim)
+        
+        self.protein_encoder = ProteinEncoder(protein_feat_dim, filter_num, protein_edge_dim)
+        self.ligand_encoder = LigandEncoder(drug_feat_dim, filter_num, drug_edge_dim)
         self.cross_attn1 = nn.MultiheadAttention(
-            embed_dim=filter_num * 3, 
+            embed_dim=filter_num, 
             num_heads=4, 
             dropout=0.2
         )
         
         self.cross_attn2 = nn.MultiheadAttention(
-            embed_dim=filter_num * 3, 
+            embed_dim=filter_num, 
             num_heads=4, 
             dropout=0.2
         )
 
         self.classifier = nn.Sequential(
-            nn.Linear(filter_num * 3 * 2, 32),
-            nn.LeakyReLU(negative_slope=0.01),
+            nn.Linear(filter_num * 4, 512),
+            nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(32, out_dim)
+            nn.Linear(512, 64),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(64, 8),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(8, out_dim)
         )
+        
+        self.prot_pe = PositionalEncoding(d_model = filter_num, dropout = 0.2, max_len = 3000)
+        self.mol_pe = PositionalEncoding(d_model = filter_num, dropout = 0.2, max_len = 100)
 
     def forward(self, data):
         
         protein = data[1]
         drug = data[0]
-        
-        protein_x = self.protein_encoder(protein.x, protein.edge_index, protein.edge_attr)
+                
+        prot_x = self.protein_encoder(protein.x, protein.edge_index, protein.edge_attr)
         ligand_x = self.ligand_encoder(drug.x, drug.edge_index, drug.edge_attr)
         
-        attn_mask1 = create_attention_mask(protein.batch, drug.batch)
-        attn_mask2 = create_attention_mask(drug.batch, protein.batch)
+        prot_x = apply_positional_encoding_to_batch(prot_x, protein.batch, self.prot_pe)
+        mol_x = apply_positional_encoding_to_batch(ligand_x, drug.batch, self.mol_pe)
         
-        attn_feat1, _ = self.cross_attn1(protein_x, ligand_x, ligand_x, attn_mask=attn_mask1)
-        attn_feat2, _ = self.cross_attn1(ligand_x, protein_x, protein_x, attn_mask=attn_mask2)
+        attn_mask1 = create_attention_mask(drug.batch, protein.batch)
+        attn_mask2 = create_attention_mask(protein.batch, drug.batch)
+        
+        # print(attn_mask1)
+        # print(attn_mask2)
+        
+        attn_feat1, _ = self.cross_attn1(prot_x, mol_x, mol_x, attn_mask=attn_mask1)
+        attn_feat2, _ = self.cross_attn1(mol_x, prot_x, prot_x, attn_mask=attn_mask2)
+        
         
         feat1 = gnn.global_mean_pool(attn_feat1, protein.batch)
         feat2 = gnn.global_mean_pool(attn_feat2, drug.batch)
+        feat3 = gnn.global_mean_pool(prot_x, protein.batch)
+        feat4 = gnn.global_mean_pool(ligand_x, drug.batch)
 
-        x = torch.cat([feat1, feat2], dim=-1)
+        x = torch.cat([feat1, feat2, feat3, feat4], dim=-1)
+        # print(x.shape)
         x = self.classifier(x)
 
         return x

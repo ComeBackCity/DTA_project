@@ -17,6 +17,8 @@ from model import MGraphDTA
 from utils import *
 from log.train_logger import TrainLogger
 from torchmetrics.regression import ConcordanceCorrCoef
+import torch_geometric.transforms as T
+from transformers import get_cosine_schedule_with_warmup
 
 def setup_seed(seed):
     random.seed(seed)                          
@@ -26,7 +28,6 @@ def setup_seed(seed):
     torch.cuda.manual_seed_all(seed)           
     torch.backends.cudnn.deterministic = True  
 
-@torch.no_grad()
 def val(model, criterion, dataloader, device):
     model.eval()
     running_loss = AverageMeter()
@@ -38,7 +39,7 @@ def val(model, criterion, dataloader, device):
         
         with torch.no_grad():
             pred = model(data)
-            print(pred)
+            # print(pred.view(-1), y.view(-1))
             loss = criterion(pred.view(-1), y.view(-1))
             label = y
             running_loss.update(loss.item(), label.size(0))
@@ -76,34 +77,40 @@ def main():
     save_model = params.get("save_model")
     data_root = params.get("data_root")
     fpath = os.path.join(data_root, DATASET)
+    
+    prot_transform = T.Compose([T.AddLaplacianEigenvectorPE(5 ,attr_name='pe')])  
+    mol_transform = T.Compose([T.AddLaplacianEigenvectorPE(5 ,attr_name='pe')])  
 
-    train_set = GNNDataset(fpath, split='train')
-    val_set = GNNDataset(fpath, split='val')
+    # train_set = GNNDataset(DATASET, split='train', prot_transform=prot_transform, mol_transform=mol_transform)
+    # val_set = GNNDataset(DATASET, split='valid', prot_transform=prot_transform, mol_transform=mol_transform)
+    
+    train_set = GNNDataset(DATASET, split='train')
+    val_set = GNNDataset(DATASET, split='valid')
 
     train_loader = DataLoader(train_set, batch_size=params.get('batch_size'), shuffle=True, num_workers=8, collate_fn = collate)
-    val_loader = DataLoader(val_set, batch_size=params.get('batch_size'), shuffle=False, num_workers=8)
-
-    # for data in train_loader:
-    #     print(data[0].x.shape)
-
-    # print(len(train_set))
-    # print(len(val_set))
-    # exit()
+    val_loader = DataLoader(val_set, batch_size=params.get('batch_size'), shuffle=False, num_workers=8, collate_fn = collate)
 
     device = torch.device('cuda:0')
     
     # metrics
     get_cindex = ConcordanceCorrCoef().to(device)
 
-    model = MGraphDTA(protein_feat_dim=1313, drug_feat_dim=22, 
-                      protein_edge_dim=6, drug_edge_dim=6, out_dim=1).to(device)
+    model = MGraphDTA(protein_feat_dim=1313, drug_feat_dim=27, 
+                      protein_edge_dim=6, drug_edge_dim=6, filter_num=256, out_dim=1).to(device)
 
     epochs = 100
-    steps_per_epoch = 100
+    steps_per_epoch = 50
     num_iter = math.ceil((epochs * steps_per_epoch) / len(train_loader))
     break_flag = False
 
     optimizer = optim.Adam(model.parameters(), lr=params.get('lr'))
+    # scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, steps_per_epoch * 5)
+    scheduler = get_cosine_schedule_with_warmup(
+        optimizer=optimizer,
+        num_warmup_steps=500,
+        num_training_steps=num_iter,
+        num_cycles=1
+    )
     criterion = nn.MSELoss()
 
     global_step = 0
@@ -129,12 +136,12 @@ def main():
             y = data[2]
 
             loss = criterion(pred.view(-1), y.view(-1))
-            # cindex = get_cindex(y.detach().cpu().numpy().reshape(-1), pred.detach().cpu().numpy().reshape(-1))
             cindex = get_cindex(pred.view(-1), y.view(-1))
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            scheduler.step()
 
             running_loss.update(loss.item(), y.size(0)) 
             running_cindex.update(cindex, y.size(0))

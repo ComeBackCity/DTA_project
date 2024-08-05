@@ -42,11 +42,11 @@ def calculate_angle(vec1, vec2):
     angle = np.arccos(np.clip(cos_theta, -1.0, 1.0))  # Ensure the value is within the valid range for arccos
     return angle
 
-def convert_nx_to_pyg(nx_graph):
+def convert_nx_to_pyg(nx_graph, embeddings):
     # Extract node attributes and create node features
     one_hot_residues = []
     meiler_features = []
-    esm_embeddings = []
+    # esm_embeddings = []
     coords = []
     beta_carbon_vectors = []
     seq_neighbour_vector = []
@@ -56,7 +56,7 @@ def convert_nx_to_pyg(nx_graph):
         one_hot_residue = one_hot_encode_residue(attr['residue_name'])
         one_hot_residues.append(one_hot_residue)
         meiler_features.append(attr['meiler'])
-        esm_embeddings.append(attr['esm_embedding'])
+        # esm_embeddings.append(attr['esm_embedding'])
         coords.append(attr['coords'])
         beta_carbon_vectors.append(attr['c_beta_vector'])
         seq_neighbour_vector.append(attr['sequence_neighbour_vector_n_to_c'])
@@ -64,7 +64,7 @@ def convert_nx_to_pyg(nx_graph):
 
     one_hot_residues = torch.tensor(one_hot_residues, dtype=torch.float)
     meiler_features = torch.tensor(meiler_features, dtype=torch.float)
-    esm_embeddings = torch.tensor(esm_embeddings, dtype=torch.float)
+    # esm_embeddings = torch.tensor(esm_embeddings, dtype=torch.float)
     coords = torch.tensor(coords, dtype=torch.float)
     beta_carbon_vectors = torch.tensor(beta_carbon_vectors, dtype=torch.float)
     seq_neighbour_vector = torch.tensor(seq_neighbour_vector, dtype=torch.float)
@@ -93,13 +93,13 @@ def convert_nx_to_pyg(nx_graph):
 
     # Create PyG Data object
     data = Data(one_hot_residues=one_hot_residues, meiler_features=meiler_features,
-                esm_embeddings=esm_embeddings, edge_index=edge_index, edge_attr=edge_attr, pos=coords, 
+                esm_embeddings=embeddings, edge_index=edge_index, edge_attr=edge_attr, pos=coords, 
                 beta_carbon_vectors=beta_carbon_vectors, seq_neighbour_vector=seq_neighbour_vector)
     
     return data
 
 
-def uniprot_id_to_structure(file_path):
+def uniprot_id_to_structure(file_path, embeddings):
     params_to_change = {
         "granularity": "CA",
         "edge_construction_functions": [
@@ -109,10 +109,10 @@ def uniprot_id_to_structure(file_path):
             partial(add_k_nn_edges, k=8),
             add_distance_to_edges,
         ],
-        "graph_metadata_functions": [
-            partial(esm_residue_embedding, model_name="esm2_t33_650M_UR50D"),
-            # biovec_sequence_embedding
-        ],
+        # "graph_metadata_functions": [
+        #     partial(esm_residue_embedding, model_name="esm2_t33_650M_UR50D"),
+        #     # biovec_sequence_embedding
+        # ],
         "node_metadata_functions": [
             amino_acid_one_hot,
             meiler_embedding,
@@ -128,6 +128,6 @@ def uniprot_id_to_structure(file_path):
     # g = construct_graph(config=config, path=f"./data/alphafold_structures/kiba/AF-{id}-F1-model_v4.pdb")
     add_beta_carbon_vector(g)
     add_sequence_neighbour_vector(g)
-    pg = convert_nx_to_pyg(g)
+    pg = convert_nx_to_pyg(g, embeddings)
     
     return pg
