@@ -41,11 +41,16 @@ def setup_seed(seed):
 
 def get_pattern(dataset, header):
     if dataset == "davis" and "358" in header:
-        file_pattern = re.compile(rf"3mtl.pdb")
+        file_pattern = re.compile(rf"AF-Q9BRL4-F1-model_v4.pdb")
     else: 
         file_pattern = re.compile(rf"{header}_unrelaxed_rank_001_.*\.pdb")
         
     return file_pattern
+
+def remove_X_from_sequence(sequence):
+    # Replace 'X' with an empty string
+    cleaned_sequence = sequence.replace('X', '')
+    return cleaned_sequence
 
 def process_data(dataset):
     
@@ -74,7 +79,10 @@ def process_data(dataset):
                 file_name = os.path.join(directory, f)
                 break  
             
-        embeddings = get_esm2_embeddings(sequence, tokenizer, model, device)
+        if header == "sequence_348":
+            embeddings = get_esm2_embeddings(remove_X_from_sequence(sequence), tokenizer, model, device)
+        else:
+            embeddings = get_esm2_embeddings(remove_X_from_sequence(sequence), tokenizer, model, device)
         
         protein_graph = uniprot_id_to_structure(file_path=file_name, embeddings = embeddings)
     

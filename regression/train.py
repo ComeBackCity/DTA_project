@@ -10,7 +10,7 @@ import torch.nn as nn
 from torch_geometric.loader import DataLoader
 import torch.nn.functional as F
 import argparse
-# from metrics import get_cindex
+from metrics import get_cindex
 from dataset_new import *
 # from model import MGraphDTA
 from model import MGraphDTA
@@ -59,6 +59,8 @@ def main():
     parser.add_argument('--save_model', action='store_true', help='whether save model or not')
     parser.add_argument('--lr', type=float, default=5e-4, help='learning rate')
     parser.add_argument('--batch_size', type=int, default=512, help='batch_size')
+    parser.add_argument('--epochs', type=int, default=100, help='epochs')
+    parser.add_argument('--steps', type=int, default=50, help='step size')
     args = parser.parse_args()
 
     params = dict(
@@ -78,14 +80,14 @@ def main():
     data_root = params.get("data_root")
     fpath = os.path.join(data_root, DATASET)
     
-    prot_transform = T.Compose([T.AddLaplacianEigenvectorPE(5 ,attr_name='pe')])  
-    mol_transform = T.Compose([T.AddLaplacianEigenvectorPE(5 ,attr_name='pe')])  
+    # prot_transform = T.Compose([T.AddLaplacianEigenvectorPE(5 ,attr_name='pe')])  
+    # mol_transform = T.Compose([T.AddLaplacianEigenvectorPE(5 ,attr_name='pe')])  
 
     # train_set = GNNDataset(DATASET, split='train', prot_transform=prot_transform, mol_transform=mol_transform)
     # val_set = GNNDataset(DATASET, split='valid', prot_transform=prot_transform, mol_transform=mol_transform)
     
     train_set = GNNDataset(DATASET, split='train')
-    val_set = GNNDataset(DATASET, split='valid')
+    val_set = GNNDataset(DATASET, split='test')
 
     train_loader = DataLoader(train_set, batch_size=params.get('batch_size'), shuffle=True, num_workers=8, collate_fn = collate)
     val_loader = DataLoader(val_set, batch_size=params.get('batch_size'), shuffle=False, num_workers=8, collate_fn = collate)
@@ -93,24 +95,24 @@ def main():
     device = torch.device('cuda:0')
     
     # metrics
-    get_cindex = ConcordanceCorrCoef().to(device)
+    # get_cindex = ConcordanceCorrCoef().to(device)
 
-    model = MGraphDTA(protein_feat_dim=1313, drug_feat_dim=27, 
+    model = MGraphDTA(protein_feat_dim=1314, drug_feat_dim=27, 
                       protein_edge_dim=6, drug_edge_dim=6, filter_num=256, out_dim=1).to(device)
 
-    epochs = 100
-    steps_per_epoch = 50
+    epochs = args.epochs
+    steps_per_epoch = args.steps
     num_iter = math.ceil((epochs * steps_per_epoch) / len(train_loader))
     break_flag = False
 
-    optimizer = optim.Adam(model.parameters(), lr=params.get('lr'))
-    # scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, steps_per_epoch * 5)
-    scheduler = get_cosine_schedule_with_warmup(
-        optimizer=optimizer,
-        num_warmup_steps=500,
-        num_training_steps=num_iter,
-        num_cycles=1
-    )
+    optimizer = optim.Adam(model.parameters(), lr=params.get('lr'), weight_decay=0.01)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, steps_per_epoch * 20)
+    # scheduler = get_cosine_schedule_with_warmup(
+    #     optimizer=optimizer,
+    #     num_warmup_steps=500,
+    #     num_training_steps=num_iter,
+    #     num_cycles=1
+    # )
     criterion = nn.MSELoss()
 
     global_step = 0
@@ -134,9 +136,11 @@ def main():
             pred = model(data)
             
             y = data[2]
-
+            
             loss = criterion(pred.view(-1), y.view(-1))
-            cindex = get_cindex(pred.view(-1), y.view(-1))
+            cindex = get_cindex(pred.detach().cpu().numpy().reshape(-1), 
+                                  y.detach().cpu().numpy().reshape(-1))
+            
 
             optimizer.zero_grad()
             loss.backward()
@@ -157,6 +161,7 @@ def main():
 
                 test_loss = val(model, criterion, val_loader, device)
 
+                # last_lr = scheduler.get_last_lr()[-1]
                 msg = "epoch-%d, loss-%.4f, cindex-%.4f, test_loss-%.4f" % (global_epoch, epoch_loss, epoch_cindex, test_loss)
                 logger.info(msg)
 

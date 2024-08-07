@@ -8,6 +8,7 @@ from graphein.protein.edges.distance import add_hydrogen_bond_interactions, \
     add_peptide_bonds, \
     add_distance_to_edges, \
     add_cation_pi_interactions, \
+    add_aromatic_interactions, \
     add_k_nn_edges
     
 from graphein.protein.features.sequence.embeddings import esm_sequence_embedding, \
@@ -50,7 +51,8 @@ def convert_nx_to_pyg(nx_graph, embeddings):
     coords = []
     beta_carbon_vectors = []
     seq_neighbour_vector = []
-    
+    b_factor = []
+        
     node_indices = {}
     for i, (node, attr) in enumerate(nx_graph.nodes(data=True)):
         one_hot_residue = one_hot_encode_residue(attr['residue_name'])
@@ -60,7 +62,8 @@ def convert_nx_to_pyg(nx_graph, embeddings):
         coords.append(attr['coords'])
         beta_carbon_vectors.append(attr['c_beta_vector'])
         seq_neighbour_vector.append(attr['sequence_neighbour_vector_n_to_c'])
-        node_indices[node] = i
+        b_factor.append(attr['b_factor'])
+        node_indices[node] = i        
 
     one_hot_residues = torch.tensor(one_hot_residues, dtype=torch.float)
     meiler_features = torch.tensor(meiler_features, dtype=torch.float)
@@ -68,6 +71,7 @@ def convert_nx_to_pyg(nx_graph, embeddings):
     coords = torch.tensor(coords, dtype=torch.float)
     beta_carbon_vectors = torch.tensor(beta_carbon_vectors, dtype=torch.float)
     seq_neighbour_vector = torch.tensor(seq_neighbour_vector, dtype=torch.float)
+    b_factor_vector = torch.tensor(b_factor, dtype=torch.float)
     
     # Extract edge attributes and create edge indices
     edge_indices = []
@@ -94,7 +98,8 @@ def convert_nx_to_pyg(nx_graph, embeddings):
     # Create PyG Data object
     data = Data(one_hot_residues=one_hot_residues, meiler_features=meiler_features,
                 esm_embeddings=embeddings, edge_index=edge_index, edge_attr=edge_attr, pos=coords, 
-                beta_carbon_vectors=beta_carbon_vectors, seq_neighbour_vector=seq_neighbour_vector)
+                beta_carbon_vectors=beta_carbon_vectors, seq_neighbour_vector=seq_neighbour_vector,
+                b_factor=b_factor_vector)
     
     return data
 
@@ -106,7 +111,8 @@ def uniprot_id_to_structure(file_path, embeddings):
             add_peptide_bonds, 
             add_hydrogen_bond_interactions,
             add_cation_pi_interactions,
-            partial(add_k_nn_edges, k=8),
+            # add_aromatic_interactions,
+            partial(add_k_nn_edges, long_interaction_threshold=10, k=5),
             add_distance_to_edges,
         ],
         # "graph_metadata_functions": [

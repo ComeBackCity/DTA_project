@@ -8,8 +8,6 @@ from tdc.multi_pred import DTI
 import pickle
 
 
-
-
 class GNNDataset(Dataset):
 
     def __init__(self, dataset_name, split='train', prot_transform=None, mol_transform=None):
@@ -25,7 +23,7 @@ class GNNDataset(Dataset):
             split = df.get_split()
             self.df = split[self.split]   
         elif self.dataset_name == "full_toxcast":
-            self.df = pd.read_csv(f"./data/full_toxcast/raw/data_{self.split}.csv")
+            self.df = pd.read_csv(f"./data/{self.dataset_name}/raw/data_{self.split}.csv")
             
         with open(f"./data/{self.dataset_name}_molecule.pkl", "rb") as f:
             self.mol_graphs = pickle.load(f)
@@ -43,9 +41,11 @@ class GNNDataset(Dataset):
         return self.df.shape[0]
     
     def __getitem__(self, idx):
+        # print(self.df.columns)
         if self.dataset_name == 'full_toxcast':
             protein_key, drug_key, label_key = "sequence", "smiles", 'label'
         else:
+            # protein_key, drug_key, label_key = "target_sequence", "compound_iso_smiles", "affinity"
             protein_key, drug_key, label_key = "Target", "Drug", "Y"
             
         protein = self.df.at[idx, protein_key]
@@ -70,7 +70,9 @@ class GNNDataset(Dataset):
             prot_graph = pickle.load(f)
             
         prot_stats = self.prot_stats
-        # prot_graph.x = torch.cat([
+        protein_graph = Data()
+        
+        # protein_graph.x = torch.cat([
         #     prot_graph.one_hot_residues,
         #     standardize_tensor(prot_graph.meiler_features, prot_stats['meiler_features']['mean'], prot_stats['meiler_features']['std']),
         #     standardize_tensor(prot_graph.esm_embeddings, prot_stats['esm_embeddings']['mean'], prot_stats['esm_embeddings']['std']),
@@ -78,19 +80,25 @@ class GNNDataset(Dataset):
         #     standardize_tensor(prot_graph.seq_neighbour_vector, prot_stats['seq_neighbour_vector']['mean'], prot_stats['seq_neighbour_vector']['std'])
         # ], dim=1)
         
-        protein_graph = Data()
         
         protein_graph.x = torch.cat([
             prot_graph.one_hot_residues,
-            prot_graph.meiler_features,
+            standardize_tensor(prot_graph.meiler_features, 
+                               prot_stats['meiler_features']['mean'], 
+                               prot_stats['meiler_features']['std']),
             prot_graph.esm_embeddings,
             prot_graph.beta_carbon_vectors, 
-            prot_graph.seq_neighbour_vector
+            prot_graph.seq_neighbour_vector,
+            standardize_tensor(prot_graph.b_factor.reshape(-1, 1), 
+                               prot_stats['b_factor']['mean'], 
+                               prot_stats['b_factor']['std']),
         ], dim=1)
         
+        
+        
         e = standardize_tensor(prot_graph.edge_attr[:, -2:], 
-                                                          prot_stats['edge_attr']['mean'],
-                                                          prot_stats['edge_attr']['std'])
+                               prot_stats['edge_attr']['mean'],
+                               prot_stats['edge_attr']['std'])
         
         protein_graph.edge_index = prot_graph.edge_index
         protein_graph.edge_attr = torch.cat([prot_graph.edge_attr[:, :-2], e], dim=1)
