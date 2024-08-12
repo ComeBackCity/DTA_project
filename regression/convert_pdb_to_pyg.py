@@ -112,7 +112,7 @@ def uniprot_id_to_structure(file_path, embeddings):
             add_hydrogen_bond_interactions,
             add_cation_pi_interactions,
             # add_aromatic_interactions,
-            partial(add_k_nn_edges, long_interaction_threshold=10, k=5),
+            partial(add_k_nn_edges, long_interaction_threshold=15, k=10),
             add_distance_to_edges,
         ],
         # "graph_metadata_functions": [

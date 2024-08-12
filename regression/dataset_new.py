@@ -18,10 +18,7 @@ class GNNDataset(Dataset):
         self.mol_transform = mol_transform
         
         if self.dataset_name == "davis" or self.dataset_name == 'kiba':
-            df = DTI(self.dataset_name)
-            df.convert_to_log("binding")
-            split = df.get_split()
-            self.df = split[self.split]   
+            self.df = pd.read_csv(f"./data/{self.dataset_name}/csvs/{self.dataset_name}_{self.split}_42.csv")
         elif self.dataset_name == "full_toxcast":
             self.df = pd.read_csv(f"./data/{self.dataset_name}/raw/data_{self.split}.csv")
             
@@ -45,8 +42,8 @@ class GNNDataset(Dataset):
         if self.dataset_name == 'full_toxcast':
             protein_key, drug_key, label_key = "sequence", "smiles", 'label'
         else:
-            # protein_key, drug_key, label_key = "target_sequence", "compound_iso_smiles", "affinity"
-            protein_key, drug_key, label_key = "Target", "Drug", "Y"
+            protein_key, drug_key, label_key = "target_sequence", "compound_iso_smiles", "affinity"
+            # protein_key, drug_key, label_key = "Target", "Drug", "Y"
             
         protein = self.df.at[idx, protein_key]
         drug = self.df.at[idx, drug_key]
@@ -119,7 +116,7 @@ def collate(data_list):
     
     return batchA, batchB
 
-def standardize_tensor(tensor, mean, std, epsilon=1e-5):
+def standardize_tensor(tensor, mean, std, epsilon=1e-8):
     """
     Standardize a tensor using the provided mean and standard deviation arrays.
     

@@ -10,6 +10,70 @@ def get_cindex(gt, pred):
 
     return CI
 
+def get_cindex(Y, P):
+    Y = np.asarray(Y)
+    P = np.asarray(P)
+
+    # Create a grid of indices
+    idx = np.arange(len(Y))
+    idx1, idx2 = np.meshgrid(idx, idx)
+
+    # Compare true values (Y) and predicted values (P) for all pairs
+    valid_pairs = Y[idx1] > Y[idx2]
+    concordant = (P[idx1] > P[idx2])
+    ties = (P[idx1] == P[idx2])
+
+    # Summing concordant pairs and counting valid pairs
+    summ = np.sum(concordant[valid_pairs]) + 0.5 * np.sum(ties[valid_pairs])
+    pair = np.sum(valid_pairs)
+
+    # Calculate C-index
+    return summ / pair if pair != 0 else 0.0
+
+def ci(y, f):
+    # Sort y and f based on sorted order of y
+    ind = np.argsort(y)
+    y = y[ind]
+    f = f[ind]
+    
+    # Create all pairwise comparisons using numpy broadcasting
+    diff_y = y[:, None] - y[None, :]  # y[i] - y[j] for all i, j
+    diff_f = f[:, None] - f[None, :]  # f[i] - f[j] for all i, j
+
+    # Only consider pairs where y[i] > y[j]
+    valid_pairs = diff_y > 0
+
+    # Calculate the concordant pairs
+    S = np.sum((diff_f > 0) * valid_pairs) + 0.5 * np.sum((diff_f == 0) * valid_pairs)
+    z = np.sum(valid_pairs)
+    
+    # Calculate C-index
+    ci = S / z if z > 0 else 0.0
+    return ci
+
+def ci2(y,f):
+    ind = np.argsort(y)
+    y = y[ind]
+    f = f[ind]
+    i = len(y)-1
+    j = i-1
+    z = 0.0
+    S = 0.0
+    while i > 0:
+        while j >= 0:
+            if y[i] > y[j]:
+                z = z+1
+                u = f[i] - f[j]
+                if u > 0:
+                    S = S + 1
+                elif u == 0:
+                    S = S + 0.5
+            j = j - 1
+        i = i - 1
+        j = i-1
+    ci = S/z
+    return ci
+
 def get_k(y_obs,y_pred):
     y_obs = np.array(y_obs)
     y_pred = np.array(y_pred)

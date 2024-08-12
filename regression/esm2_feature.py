@@ -44,6 +44,8 @@ def get_esm2_embeddings(sequence, tokenizer, model, device):
     # Move the inputs to the GPU if available
     inputs = {key: val.to(device) for key, val in inputs.items()}
     
+    model.eval()
+    
     # Get the embeddings
     with torch.no_grad():
         outputs = model(**inputs)

@@ -10,8 +10,9 @@ import argparse
 from metrics import get_cindex, get_rm2
 from dataset import *
 # from model import MGraphDTA
-from model_gat import MGraphDTA
+from model import MGraphDTA
 from utils import *
+from dataset_new import *
 
 def val(model, criterion, dataloader, device):
     model.eval()
@@ -21,12 +22,13 @@ def val(model, criterion, dataloader, device):
     label_list = []
 
     for data in dataloader:
-        data = data.to(device)
+        data = [data_elem.to(device) for data_elem in data]
 
         with torch.no_grad():
             pred = model(data)
-            loss = criterion(pred.view(-1), data.y.view(-1))
-            label = data.y
+            label = data[2]
+            print(pred.view(-1), label.view(-1))
+            loss = criterion(pred.view(-1), label.view(-1))
             pred_list.append(pred.view(-1).detach().cpu().numpy())
             label_list.append(label.detach().cpu().numpy())
             running_loss.update(loss.item(), label.size(0))
@@ -55,12 +57,14 @@ def main():
 
     fpath = os.path.join(data_root, DATASET)
 
-    test_set = GNNDataset(fpath, train=False)
+    # test_set = GNNDataset(fpath, train=False)
+    test_set = GNNDataset(DATASET, split='test')
     print("Number of test: ", len(test_set))
     test_loader = DataLoader(test_set, batch_size=256, shuffle=False, num_workers=8)
 
     device = torch.device('cuda:0')
-    model = MGraphDTA(3, 25 + 1, embedding_size=128, filter_num=32, out_dim=1).to(device)
+    model = MGraphDTA(protein_feat_dim=1314, drug_feat_dim=27, 
+                      protein_edge_dim=6, drug_edge_dim=6, filter_num=32, out_dim=1).to(device)
 
     criterion = nn.MSELoss()
     load_model_dict(model, model_path)

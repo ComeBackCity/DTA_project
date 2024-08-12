@@ -10,7 +10,7 @@ import torch.nn as nn
 from torch_geometric.loader import DataLoader
 import torch.nn.functional as F
 import argparse
-from metrics import get_cindex
+from metrics import get_cindex, ci
 from dataset_new import *
 # from model import MGraphDTA
 from model import MGraphDTA
@@ -19,6 +19,7 @@ from log.train_logger import TrainLogger
 from torchmetrics.regression import ConcordanceCorrCoef
 import torch_geometric.transforms as T
 from transformers import get_cosine_schedule_with_warmup
+from tqdm import tqdm
 
 def setup_seed(seed):
     random.seed(seed)                          
@@ -60,7 +61,6 @@ def main():
     parser.add_argument('--lr', type=float, default=5e-4, help='learning rate')
     parser.add_argument('--batch_size', type=int, default=512, help='batch_size')
     parser.add_argument('--epochs', type=int, default=100, help='epochs')
-    parser.add_argument('--steps', type=int, default=50, help='step size')
     args = parser.parse_args()
 
     params = dict(
@@ -87,7 +87,7 @@ def main():
     # val_set = GNNDataset(DATASET, split='valid', prot_transform=prot_transform, mol_transform=mol_transform)
     
     train_set = GNNDataset(DATASET, split='train')
-    val_set = GNNDataset(DATASET, split='test')
+    val_set = GNNDataset(DATASET, split='valid')
 
     train_loader = DataLoader(train_set, batch_size=params.get('batch_size'), shuffle=True, num_workers=8, collate_fn = collate)
     val_loader = DataLoader(val_set, batch_size=params.get('batch_size'), shuffle=False, num_workers=8, collate_fn = collate)
@@ -98,15 +98,13 @@ def main():
     # get_cindex = ConcordanceCorrCoef().to(device)
 
     model = MGraphDTA(protein_feat_dim=1314, drug_feat_dim=27, 
-                      protein_edge_dim=6, drug_edge_dim=6, filter_num=256, out_dim=1).to(device)
+                      protein_edge_dim=6, drug_edge_dim=6, filter_num=32, out_dim=1).to(device)
 
     epochs = args.epochs
-    steps_per_epoch = args.steps
-    num_iter = math.ceil((epochs * steps_per_epoch) / len(train_loader))
     break_flag = False
 
     optimizer = optim.Adam(model.parameters(), lr=params.get('lr'), weight_decay=0.01)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, steps_per_epoch * 20)
+    # scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, steps_per_epoch * 100)
     # scheduler = get_cosine_schedule_with_warmup(
     #     optimizer=optimizer,
     #     num_warmup_steps=500,
@@ -115,8 +113,6 @@ def main():
     # )
     criterion = nn.MSELoss()
 
-    global_step = 0
-    global_epoch = 0
     early_stop_epoch = 400
 
     running_loss = AverageMeter()
@@ -125,56 +121,51 @@ def main():
 
     model.train()
 
-    for i in range(num_iter):
+    for i in range(epochs):
         if break_flag:
             break
 
-        for data in train_loader:
+        for data in tqdm(train_loader, desc=f"Training (Epoch {i})", leave=False):
 
-            global_step += 1       
             data = [data_elem.to(device) for data_elem in data]
+            optimizer.zero_grad()
             pred = model(data)
             
             y = data[2]
             
-            loss = criterion(pred.view(-1), y.view(-1))
-            cindex = get_cindex(pred.detach().cpu().numpy().reshape(-1), 
-                                  y.detach().cpu().numpy().reshape(-1))
-            
+            loss = criterion(pred.view(-1), y.view(-1))         
+            cindex = get_cindex(y.detach().cpu().numpy().reshape(-1), 
+                                pred.detach().cpu().numpy().reshape(-1))
 
-            optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            scheduler.step()
+            # scheduler.step()
 
             running_loss.update(loss.item(), y.size(0)) 
             running_cindex.update(cindex, y.size(0))
 
-            if global_step % steps_per_epoch == 0:
+        epoch_loss = running_loss.get_average()
+        epoch_cindex = running_cindex.get_average()
+        running_loss.reset()
+        running_cindex.reset()
 
-                global_epoch += 1
+        val_loss = val(model, criterion, val_loader, device)
 
-                epoch_loss = running_loss.get_average()
-                epoch_cindex = running_cindex.get_average()
-                running_loss.reset()
-                running_cindex.reset()
+        # last_lr = scheduler.get_last_lr()[-1]
+        msg = "epoch-%d, loss-%.4f, cindex-%.4f, val_loss-%.4f" % (i, epoch_loss, epoch_cindex, val_loss)
+        logger.info(msg)
 
-                test_loss = val(model, criterion, val_loader, device)
-
-                # last_lr = scheduler.get_last_lr()[-1]
-                msg = "epoch-%d, loss-%.4f, cindex-%.4f, test_loss-%.4f" % (global_epoch, epoch_loss, epoch_cindex, test_loss)
-                logger.info(msg)
-
-                if test_loss < running_best_mse.get_best():
-                    running_best_mse.update(test_loss)
-                    if save_model:
-                        save_model_dict(model, logger.get_model_dir(), msg)
-                else:
-                    count = running_best_mse.counter()
-                    if count > early_stop_epoch:
-                        logger.info(f"early stop in epoch {global_epoch}")
-                        break_flag = True
-                        break
+        if val_loss < running_best_mse.get_best():
+            print("here")
+            running_best_mse.update(val_loss)
+            if save_model:
+                save_model_dict(model, logger.get_model_dir(), msg)
+        else:
+            count = running_best_mse.counter()
+            if count > early_stop_epoch:
+                logger.info(f"early stop in epoch {i}")
+                break_flag = True
+                break
 
 if __name__ == "__main__":
     main()

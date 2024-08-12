@@ -208,145 +208,183 @@ class GraphDenseNet(nn.Module):
 class egretblock(nn.Module):
     def __init__(self, in_dim, edge_dim, num_heads=1) -> None:
         super().__init__()
-        
-        # config_dict['feat_drop'] = 0.5
-        # config_dict['edge_feat_drop'] = 0.5
-        # config_dict['attn_drop'] = 0.5
-        
-        # self.egret_layer = MultiHeadEGRETLayer(in_dim, in_dim, edge_dim, num_heads, use_bias=True,
-        #                                        merge='mean', config_dict=config_dict)
-        
-        self.egret_layer = gnn.GATv2Conv(in_channels=in_dim, 
-                                        out_channels=in_dim, 
+                
+        out_dim = in_dim // num_heads
+        self.egret_layer = gnn.GATConv(in_channels=in_dim, 
+                                        out_channels=out_dim,
                                         heads=num_heads,
-                                        concat=False, 
+                                        concat=True, 
                                         negative_slope=0.2, 
                                         dropout=0.2, add_self_loops = True, 
-                                        edge_dim=edge_dim, fill_value = 0, bias = True)
+                                        edge_dim=edge_dim, fill_value = 'mean', bias = True)
         
         self.bn1 = NodeLevelBatchNorm(in_dim)
-        self.weight1 = nn.Parameter(torch.randn(2))
+        self.attn_drop = nn.Dropout(0.2)
         
         self.encoder = nn.Sequential(
-            nn.Conv1d(in_channels=in_dim, out_channels=in_dim, stride=1, padding=1, kernel_size=3),
-            nn.LeakyReLU(negative_slope=0.01),
-            nn.Dropout(0.5),
+            NodeLevelBatchNorm(in_dim),
+            nn.Linear(in_dim, in_dim),
+            nn.GELU(),
+            nn.Dropout(0.2),
         )
-        
-        self.bn2 = NodeLevelBatchNorm(in_dim)
-        self.weight2 = nn.Parameter(torch.randn(2))
-        
+                
     def forward(self, x, edge_index, edge_attr):
         
         # print(x)
-        attn_feat = self.egret_layer(x, edge_index, edge_attr)
-        # print(attn_feat)
-        w1 = self.weight1.softmax(-1)
-        z = w1[0] * x + w1[1] * attn_feat
-        # print(z)
-        z = self.bn1(z)
-        z1 = torch.unsqueeze(z, 0)
-        z1 = torch.permute(z1, (0, 2, 1))
-        z1 = self.encoder(z1)
-        z1 = torch.permute(z1, (0, 2, 1))
-        z1 = torch.squeeze(z1)
-        w2 = self.weight2.softmax(-1)
-        z = w2[0] * z + w2[1] * z1
-        # print(z)
-        z = self.bn2(z)
-        # print(z)
+        attn_feat = self.egret_layer(self.bn1(x), edge_index, edge_attr)
+        z = x + self.attn_drop(attn_feat)
+        z1 = self.encoder(z)
+        z = z + z1
         
         return z
          
     
 class GraphEncoder(nn.Module):
-    def __init__(self, in_dim, out_dim, edge_dim) -> None:
+    def __init__(self, in_dim, hidden_dim, out_dim, edge_dim, layer_count) -> None:
         super().__init__()
         
         self.reshaper = nn.Sequential(
-            nn.Linear(in_dim, 1024),
-            nn.LeakyReLU(0.01),
-            nn.Dropout(0.5)
-        )
-        
-        self.em1 = egretblock(in_dim=1024, edge_dim=edge_dim, num_heads=4)
-        self.em2 = egretblock(in_dim=1024, edge_dim=edge_dim, num_heads=4)
-        self.em3 = egretblock(in_dim=1024, edge_dim=edge_dim, num_heads=4)
-        
-        # self.weight1 = nn.Parameter(torch.randn(2))
-        # self.weight2 = nn.Parameter(torch.randn(2))
-        # self.weight3 = nn.Parameter(torch.randn(2))
-        
-        self.reducer = nn.Sequential(
-            nn.Linear(1024, out_dim),
-            nn.LeakyReLU(0.01),
-            nn.Dropout(0.5)
-        )
-        
-    def forward(self, x, edge_index, edge_attr): 
-        
-        # print(x)
-        z = self.reshaper(x)
-        z = self.em1(z, edge_index, edge_attr)
-        z = self.em2(z, edge_index, edge_attr)
-        z = self.em2(z, edge_index, edge_attr)
-        z = self.reducer(z)
-        # print(z)
-        return z
-    
-class LigandEncoder(nn.Module):
-    def __init__(self, in_dim, out_dim, edge_dim) -> None:
-        super().__init__()
-        
-        self.reshaper = nn.Sequential(
-            nn.Linear(in_dim, 1024),
-            nn.LeakyReLU(0.01),
+            nn.Linear(in_dim, hidden_dim),
+            nn.LeakyReLU(0.02),
+            NodeLevelBatchNorm(hidden_dim),
             nn.Dropout(0.2)
         )
         
-        self.em1 = egretblock(in_dim=1024, out_dim=512, edge_dim=edge_dim, num_heads=4)
-        self.em2 = egretblock(in_dim=512, out_dim=out_dim, edge_dim=edge_dim, num_heads=4)
+        layers = [
+            (
+                egretblock(in_dim=hidden_dim, edge_dim=edge_dim, num_heads=4), 
+                ('x, edge_index, edge_attr -> x')
+            )
+                for _ in range(layer_count)
+        ]
         
+        self.gnn_block = gnn.Sequential(
+            'x, edge_index, edge_attr', layers
+        )
+        
+        self.reducer = Mlp(
+            in_features=hidden_dim, 
+            hidden_features=hidden_dim, 
+            out_features=out_dim,
+            act_layer=nn.LeakyReLU(0.02),
+            drop=0.2
+        )
         
     def forward(self, x, edge_index, edge_attr): 
         
         z = self.reshaper(x)
-        z = self.em1(z, edge_index, edge_attr)
-        z = self.em2(z, edge_index, edge_attr)
-        
+        z = self.gnn_block(z, edge_index, edge_attr)
+        z = self.reducer(z)
+
         return z
+    
+class Mlp(nn.Module):
+    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
+        super().__init__()
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+        self.fc1 = nn.Linear(in_features, hidden_features)
+        self.act = act_layer
+        self.fc2 = nn.Linear(hidden_features, out_features)
+        self.drop = nn.Dropout(drop)
+
+    def forward(self, x):
+        z = self.fc1(x)
+        z = self.act(z)
+        x = self.drop(z)
+        z = self.fc2(z)
+        z = self.drop(z)
+        return z
+
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, d_model, num_heads, dropout):
+        super(MultiHeadAttention, self).__init__()
+        
+        assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
+        
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_k = d_model // num_heads
+        
+        self.linear1 = nn.Linear(d_model, d_model)
+        self.linear2 = nn.Linear(d_model, d_model * 2)
+        
+        self.out_linear = nn.Linear(d_model, d_model)
+        
+        self.softmax = nn.Softmax(dim=-1)
+        self.attn_drop = nn.Dropout(dropout)
+        self.proj_drop = nn.Dropout(dropout)
+        
+    def forward(self, x1, x2, mask=None):
+        N = x2.shape[0]
+        
+        q = self.linear1(x1)
+        z = self.linear2(x2)
+        z = torch.reshape(z, (2, N, self.d_model))
+        k, v = z[0], z[1]
+                
+        # Reshape into (batch_size, num_heads, seq_len, d_k)
+        query = q.view(-1, self.num_heads, self.d_k).transpose(0, 1)
+        key = k.view(-1, self.num_heads, self.d_k).transpose(0, 1)
+        value = v.view(-1, self.num_heads, self.d_k).transpose(0, 1)
+                
+        # Scaled dot-product attention
+        scale = torch.sqrt(torch.tensor(self.d_k, dtype=torch.float32))
+        scores = torch.matmul(query, key.transpose(2, 1)) / scale
+        
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, -1e9)
+        
+        attention_weights = self.softmax(scores)
+        attention_weights = self.attn_drop(attention_weights)
+        attention_output = torch.matmul(attention_weights, value)
+        
+        # Concatenate heads
+        attention_output = attention_output.transpose(0, 1).contiguous().view(-1, self.d_model)
+        
+        # Final linear layer
+        output = self.proj_drop(self.out_linear(attention_output))
+        
+        return output, attention_weights
 
 class MGraphDTA(nn.Module):
     def __init__(self, protein_feat_dim, drug_feat_dim, protein_edge_dim, drug_edge_dim, filter_num=32, out_dim=1):
         super().__init__()
-        # self.protein_encoder = GraphDenseNet(num_input_features=protein_feat_dim, out_dim=filter_num*3, block_config=[8, 8, 8], bn_sizes=[2, 2, 2])
-        # self.ligand_encoder = GraphDenseNet(num_input_features=drug_feat_dim, out_dim=filter_num*3, block_config=[8, 8, 8], bn_sizes=[2, 2, 2])
+    
+        self.protein_encoder = GraphEncoder(protein_feat_dim, 512, filter_num, protein_edge_dim, 12)
+        self.ligand_encoder = GraphEncoder(drug_feat_dim, 64, filter_num, drug_edge_dim, 6)
         
-        self.protein_encoder = GraphEncoder(protein_feat_dim, filter_num, protein_edge_dim)
-        self.ligand_encoder = GraphEncoder(drug_feat_dim, filter_num, drug_edge_dim)
-        self.cross_attn1 = nn.MultiheadAttention(
-            embed_dim=filter_num, 
+        # self.cross_attn1 = nn.MultiheadAttention(
+        #     embed_dim=filter_num, 
+        #     num_heads=4, 
+        #     dropout=0.2
+        # )
+        
+        # self.cross_attn2 = nn.MultiheadAttention(
+        #     embed_dim=filter_num, 
+        #     num_heads=4, 
+        #     dropout=0.2
+        # )
+        
+        self.cross_attn1 = MultiHeadAttention(
+            d_model=filter_num, 
             num_heads=4, 
             dropout=0.2
         )
         
-        self.cross_attn2 = nn.MultiheadAttention(
-            embed_dim=filter_num, 
+        self.cross_attn2 = MultiHeadAttention(
+            d_model=filter_num, 
             num_heads=4, 
             dropout=0.2
         )
 
-        self.classifier = nn.Sequential(
-            nn.Linear(filter_num * 4, 512),
-            nn.LeakyReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(512, 64),
-            nn.LeakyReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(64, 8),
-            nn.LeakyReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(8, out_dim)
+        self.classifier = Mlp(
+            in_features=filter_num * 6,
+            hidden_features=64,
+            out_features=1,
+            act_layer=nn.LeakyReLU(0.02),
+            drop=0.2
         )
         
         self.prot_pe = PositionalEncoding(d_model = filter_num, dropout = 0.2, max_len = 2800)
@@ -356,56 +394,31 @@ class MGraphDTA(nn.Module):
         
         protein = data[1]
         drug = data[0]
-        
-        # print(protein.x)
-        # print(drug.x)
                 
         prot_x = self.protein_encoder(protein.x, protein.edge_index, protein.edge_attr)
         ligand_x = self.ligand_encoder(drug.x, drug.edge_index, drug.edge_attr)
         
-        # print(prot_x)
-        # print(ligand_x)
-        
         prot_x = apply_positional_encoding_to_batch(prot_x, protein.batch, self.prot_pe)
         mol_x = apply_positional_encoding_to_batch(ligand_x, drug.batch, self.mol_pe)
         
-        # print(prot_x)
-        # print(ligand_x)
-        
         attn_mask1 = create_attention_mask(drug.batch, protein.batch)
         attn_mask2 = create_attention_mask(protein.batch, drug.batch)
+           
+        attn_feat1, _ = self.cross_attn1(prot_x, mol_x, mask=attn_mask1)       
+        attn_feat2, _ = self.cross_attn2(mol_x, prot_x, mask=attn_mask2)
         
-        # print("masks")
-        # print(attn_mask1)
-        # print(attn_mask2)
+        protein_x = prot_x + attn_feat1
+        molecule_x = mol_x + attn_feat2
         
-        # print(attn_mask1)
-        # print(attn_mask2)
-        
-        attn_feat1, _ = self.cross_attn1(prot_x, mol_x, mol_x, attn_mask=attn_mask1)
-        attn_feat2, _ = self.cross_attn1(mol_x, prot_x, prot_x, attn_mask=attn_mask2)
-        
-        # print(attn_feat1)
-        # print(attn_feat2)
-        
-        feat1 = gnn.global_mean_pool(attn_feat1, protein.batch)
-        feat2 = gnn.global_mean_pool(attn_feat2, drug.batch)
+        feat1 = gnn.global_mean_pool(protein_x, protein.batch)
+        feat2 = gnn.global_mean_pool(molecule_x, drug.batch)
         feat3 = gnn.global_mean_pool(prot_x, protein.batch)
-        feat4 = gnn.global_mean_pool(ligand_x, drug.batch)
-        
-        # print(feat1)
-        # print(feat2)
-        # print(feat3)
-        # print(feat4)
+        feat4 = gnn.global_mean_pool(mol_x, drug.batch)
+        feat5 = gnn.global_mean_pool(attn_feat1, protein.batch)
+        feat6 = gnn.global_mean_pool(attn_feat2, drug.batch)
 
-        x = torch.cat([feat1, feat2, feat3, feat4], dim=-1)
-        
-        # print(x)
-        # print(x.shape)
+        x = torch.cat([feat1, feat2, feat3, feat4, feat5, feat6], dim=-1)
         x = self.classifier(x)
-        
-        # print(x)
-        # exit()
 
         return x
 
