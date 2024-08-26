@@ -210,7 +210,7 @@ class egretblock(nn.Module):
         super().__init__()
                 
         out_dim = in_dim // num_heads
-        self.egret_layer = gnn.GATConv(in_channels=in_dim, 
+        self.egret_layer = gnn.GATv2Conv(in_channels=in_dim, 
                                         out_channels=out_dim,
                                         heads=num_heads,
                                         concat=True, 
@@ -352,8 +352,8 @@ class MGraphDTA(nn.Module):
     def __init__(self, protein_feat_dim, drug_feat_dim, protein_edge_dim, drug_edge_dim, filter_num=32, out_dim=1):
         super().__init__()
     
-        self.protein_encoder = GraphEncoder(protein_feat_dim, 512, filter_num, protein_edge_dim, 12)
-        self.ligand_encoder = GraphEncoder(drug_feat_dim, 64, filter_num, drug_edge_dim, 6)
+        self.protein_encoder = GraphEncoder(protein_feat_dim, 512, filter_num, protein_edge_dim, 2)
+        self.ligand_encoder = GraphEncoder(drug_feat_dim, 64, filter_num, drug_edge_dim, 1)
         
         # self.cross_attn1 = nn.MultiheadAttention(
         #     embed_dim=filter_num, 
@@ -380,8 +380,8 @@ class MGraphDTA(nn.Module):
         )
 
         self.classifier = Mlp(
-            in_features=filter_num * 6,
-            hidden_features=64,
+            in_features=filter_num * 2,
+            hidden_features=8,
             out_features=1,
             act_layer=nn.LeakyReLU(0.02),
             drop=0.2
@@ -412,12 +412,13 @@ class MGraphDTA(nn.Module):
         
         feat1 = gnn.global_mean_pool(protein_x, protein.batch)
         feat2 = gnn.global_mean_pool(molecule_x, drug.batch)
-        feat3 = gnn.global_mean_pool(prot_x, protein.batch)
-        feat4 = gnn.global_mean_pool(mol_x, drug.batch)
-        feat5 = gnn.global_mean_pool(attn_feat1, protein.batch)
-        feat6 = gnn.global_mean_pool(attn_feat2, drug.batch)
+        # feat3 = gnn.global_mean_pool(prot_x, protein.batch)
+        # feat4 = gnn.global_mean_pool(mol_x, drug.batch)
+        # feat5 = gnn.global_mean_pool(attn_feat1, protein.batch)
+        # feat6 = gnn.global_mean_pool(attn_feat2, drug.batch)
 
-        x = torch.cat([feat1, feat2, feat3, feat4, feat5, feat6], dim=-1)
+        # x = torch.cat([feat1, feat2, feat3, feat4, feat5, feat6], dim=-1)
+        x = torch.cat([feat1, feat2], dim=-1)
         x = self.classifier(x)
 
         return x

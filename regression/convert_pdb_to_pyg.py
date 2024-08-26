@@ -8,6 +8,9 @@ from graphein.protein.edges.distance import add_hydrogen_bond_interactions, \
     add_peptide_bonds, \
     add_distance_to_edges, \
     add_cation_pi_interactions, \
+    add_ionic_interactions, \
+    add_disulfide_interactions, \
+    add_hydrophobic_interactions, \
     add_aromatic_interactions, \
     add_k_nn_edges
     
@@ -79,8 +82,10 @@ def convert_nx_to_pyg(nx_graph, embeddings):
     for u, v, attr in nx_graph.edges(data=True):
         knn_bond = 1.0 if 'knn' in attr['kind'] else 0.0
         peptide_bond = 1.0 if 'peptide_bond' in attr['kind'] else 0.0
-        disulfide_bond = 1.0 if 'disulfide_bond' in attr['kind'] else 0.0
-        hydrogen_bond = 1.0 if 'hydrogen_bond' in attr['kind'] else 0.0
+        disulfide_bond = 1.0 if 'disulfide' in attr['kind'] else 0.0
+        hydrogen_bond = 1.0 if 'hbond' in attr['kind'] else 0.0
+        ionic_interaction = 1.0 if 'ionic' in attr['kind'] else 0.0
+        cation_pi = 1.0 if 'cation_pi' in attr['kind'] else 0.0
         
         # Calculate the edge vector and angle relative to the origin
         coord_u = nx_graph.nodes[u]['coords']
@@ -90,7 +95,8 @@ def convert_nx_to_pyg(nx_graph, embeddings):
         angle = calculate_angle(edge_vector, origin_vector)
         
         edge_indices.append([node_indices[u], node_indices[v]])
-        edge_attrs.append([knn_bond, peptide_bond, disulfide_bond, hydrogen_bond, attr['distance'], angle])
+        edge_attrs.append([knn_bond, peptide_bond, disulfide_bond, hydrogen_bond, ionic_interaction, \
+            cation_pi, attr['distance'], angle])
     
     edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
     edge_attr = torch.tensor(edge_attrs, dtype=torch.float)
@@ -111,8 +117,10 @@ def uniprot_id_to_structure(file_path, embeddings):
             add_peptide_bonds, 
             add_hydrogen_bond_interactions,
             add_cation_pi_interactions,
+            add_ionic_interactions,
+            add_disulfide_interactions,
             # add_aromatic_interactions,
-            partial(add_k_nn_edges, long_interaction_threshold=15, k=10),
+            partial(add_k_nn_edges, long_interaction_threshold=0, k=40),
             add_distance_to_edges,
         ],
         # "graph_metadata_functions": [

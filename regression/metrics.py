@@ -1,14 +1,14 @@
 import numpy as np
 from sklearn.metrics import roc_auc_score, cohen_kappa_score
 
-def get_cindex(gt, pred):
-    gt_mask = gt.reshape((1, -1)) > gt.reshape((-1, 1))
-    diff = pred.reshape((1, -1)) - pred.reshape((-1, 1))
-    h_one = (diff > 0)
-    h_half = (diff == 0)
-    CI = np.sum(gt_mask * h_one * 1.0 + gt_mask * h_half * 0.5) / (np.sum(gt_mask) + 1e-9)
+# def get_cindex(gt, pred):
+#     gt_mask = gt.reshape((1, -1)) > gt.reshape((-1, 1))
+#     diff = pred.reshape((1, -1)) - pred.reshape((-1, 1))
+#     h_one = (diff > 0)
+#     h_half = (diff == 0)
+#     CI = np.sum(gt_mask * h_one * 1.0 + gt_mask * h_half * 0.5) / (np.sum(gt_mask) + 1e-9)
 
-    return CI
+#     return CI
 
 def get_cindex(Y, P):
     Y = np.asarray(Y)

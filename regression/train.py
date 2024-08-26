@@ -98,13 +98,13 @@ def main():
     # get_cindex = ConcordanceCorrCoef().to(device)
 
     model = MGraphDTA(protein_feat_dim=1314, drug_feat_dim=27, 
-                      protein_edge_dim=6, drug_edge_dim=6, filter_num=32, out_dim=1).to(device)
+                      protein_edge_dim=8, drug_edge_dim=6, filter_num=32, out_dim=1).to(device)
 
     epochs = args.epochs
     break_flag = False
 
     optimizer = optim.Adam(model.parameters(), lr=params.get('lr'), weight_decay=0.01)
-    # scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, steps_per_epoch * 100)
+    # scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs * len(train_loader))
     # scheduler = get_cosine_schedule_with_warmup(
     #     optimizer=optimizer,
     #     num_warmup_steps=500,
@@ -136,6 +136,9 @@ def main():
             loss = criterion(pred.view(-1), y.view(-1))         
             cindex = get_cindex(y.detach().cpu().numpy().reshape(-1), 
                                 pred.detach().cpu().numpy().reshape(-1))
+            
+            # print(y.detach().cpu().numpy().reshape(-1), 
+            #                     pred.detach().cpu().numpy().reshape(-1))
 
             loss.backward()
             optimizer.step()

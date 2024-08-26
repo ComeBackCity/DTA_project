@@ -55,19 +55,16 @@ def setup_seed(seed):
 
 def process(dataset_name):
     if dataset_name == "davis" or dataset_name == 'kiba':
-        dataset = DTI(dataset_name)
-        dataset.convert_to_log("binding")
-        split = dataset.get_split()
-        df_train = split['train']
-        df_val = split['valid']
-        df_test = split['test']
-        df = pd.concat([df_train, df_val, df_test])
+        df_train = pd.read_csv(f"./data/{dataset_name}/csvs/{dataset_name}_train_42.csv")
+        df_valid = pd.read_csv(f"./data/{dataset_name}/csvs/{dataset_name}_valid_42.csv")
+        df_test = pd.read_csv(f"./data/{dataset_name}/csvs/{dataset_name}_test_42.csv")
+        df = pd.concat([df_train, df_valid, df_test])
     elif dataset_name == 'full_toxcast':
         df_train = pd.read_csv("./data/full_toxcast/raw/data_train.csv")
         df_test = pd.read_csv("./data/full_toxcast/raw/data_test.csv")
         df = pd.concat([df_train, df_test])
         
-    key_name = "smiles" if dataset_name == "full_toxcast" else "Drug"
+    key_name = "smiles" if dataset_name == "full_toxcast" else "compound_iso_smiles"
 
     smiles = df[key_name].unique()
     graph_dict = dict()

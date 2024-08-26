@@ -129,8 +129,8 @@ def standardize_tensor(tensor, mean, std, epsilon=1e-8):
     - standardized_tensor (torch.Tensor): The standardized tensor.
     """
     # Ensure mean and std are tensors
-    mean = torch.tensor(mean, dtype=tensor.dtype, device=tensor.device)
-    std = torch.tensor(std, dtype=tensor.dtype, device=tensor.device)
+    mean = torch.tensor(mean, dtype=tensor.dtype, device=tensor.device).reshape(-1, tensor.shape[1])
+    std = torch.tensor(std, dtype=tensor.dtype, device=tensor.device).reshape(-1, tensor.shape[1])
     
     # Standardize the tensor
     standardized_tensor = (tensor - mean) / (std + epsilon)
