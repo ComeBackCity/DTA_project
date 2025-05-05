@@ -41,7 +41,7 @@ def setup_seed(seed):
 
 def get_pattern(dataset, header):
     if dataset == "davis" and "358" in header:
-        file_pattern = re.compile(rf"AF-Q9BRL4-F1-model_v4.pdb")
+        file_pattern = re.compile(rf"sequence_358_92648_relaxed_rank_001_alphafold2_ptm_model_2_seed_000.pdb")
     else: 
         file_pattern = re.compile(rf"{header}_unrelaxed_rank_001_.*\.pdb")
         
@@ -53,25 +53,35 @@ def remove_X_from_sequence(sequence):
     return cleaned_sequence
 
 def process_data(dataset):
-    
     tokenizer, model, device = load_esm2_model()
-    
+
     with open(f"data/{dataset}_mapping.pkl", "rb") as f:
         mapping = pickle.load(f)
         
-    save_dir = f"./data/{dataset}/protein_graphs/"
+    save_dir1 = f"./data/{dataset}/protein_graphs/with_embeddings"
+    save_dir2 = f"./data/{dataset}/protein_graphs/wo_embeddings"
+    embeddings_dir = f"./data/{dataset}/embeddings/"
     
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
+    if not os.path.exists(save_dir1):
+        os.makedirs(save_dir1)
+        
+    if not os.path.exists(save_dir2):
+        os.makedirs(save_dir2)
+        
+    if not os.path.exists(embeddings_dir):
+        os.makedirs(embeddings_dir)
     
+
     for sequence, header in mapping.items():
         
         directory = f"./data/alphafold2/{dataset}/{header}/"
         files = os.listdir(directory) 
-        save_path = os.path.join(save_dir, f"{header}.pkl")
+        save_path1 = os.path.join(save_dir1, f"{header}.pkl")
+        save_path2 = os.path.join(save_dir2, f"{header}.pkl")
+        emb_save_path = os.path.join(embeddings_dir, f"{header}.pkl")
         
-        if os.path.exists(save_path):
-            continue
+        # if os.path.exists(save_path1):
+        #     continue
         
         file_pattern = get_pattern(dataset, header)
         for f in files:
@@ -79,15 +89,27 @@ def process_data(dataset):
                 file_name = os.path.join(directory, f)
                 break  
             
+        print("Extracting embeddings...")
         if header == "sequence_348":
-            embeddings = get_esm2_embeddings(remove_X_from_sequence(sequence), tokenizer, model, device)
+            embeddings, emb_full = get_esm2_embeddings(remove_X_from_sequence(sequence), tokenizer, model, device)
         else:
-            embeddings = get_esm2_embeddings(remove_X_from_sequence(sequence), tokenizer, model, device)
-        
-        protein_graph = uniprot_id_to_structure(file_path=file_name, embeddings = embeddings)
+            embeddings, emb_full = get_esm2_embeddings(remove_X_from_sequence(sequence), tokenizer, model, device)
+        print("Done extracting embeddings...")
+
+        # print an indciator for debugging 
+        print(f"Processing {header}...")
+        protein_graph = \
+            uniprot_id_to_structure(pdb_path=file_name, embeddings = embeddings)
+        print(f"Processed {header}...")
     
-        with open(save_path, "wb") as f:
+        with open(save_path1, "wb") as f:
             pickle.dump(protein_graph, f)
+            
+        with open(save_path2, "wb") as f:
+            pickle.dump(protein_graph, f)
+            
+        with open(emb_save_path, "wb") as f:
+            pickle.dump(emb_full, f)
     
         gc.collect()            
 
@@ -96,6 +118,6 @@ if __name__ == "__main__":
     setup_seed(100)
     process_data("davis")
     process_data("kiba")
-    process_data("full_toxcast")
+    # process_data("full_toxcast")
     
     

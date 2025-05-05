@@ -5,52 +5,59 @@ import collections
 
 def calculate_mean_std_per_key(data_dir):
     """
-    Calculate the mean and standard deviation per tensor key per column in a directory of PyG Data objects.
+    Calculate mean and std for each feature tensor (per column) 
+    in a directory of saved PyG Data objects.
     
-    Args:
-    - data_dir (str): The directory containing the PyG Data objects as .pkl files.
-    
-    Returns:
-    - stats (dict): A dictionary containing the mean and std for each tensor key.
+    Features like one-hot, clustering, relative position are skipped.
+    Edge attributes: only last 6 columns normalized.
     """
-    # Initialize a dictionary to store all tensor values by key
+    # Keys that we should NOT normalize
+    keys_to_skip = {
+        'one_hot_residues', 'relative_position', 'clustering', 'edge_index', 'pos'
+    }
+
     all_tensors = collections.defaultdict(list)
 
     for filename in os.listdir(data_dir):
         if filename.endswith('.pkl'):
-            with open(os.path.join(data_dir, filename), 'rb') as file:
-                data = pickle.load(file)
-                
+            with open(os.path.join(data_dir, filename), 'rb') as f:
+                data = pickle.load(f)
+
                 for key, value in data.items():
-                    if key not in {'edge_index', 'pos', 'one_hot_residues'} and torch.is_tensor(value):
+                    if torch.is_tensor(value):
+                        if key in keys_to_skip:
+                            continue
                         if key == 'edge_attr':
-                            all_tensors[key].append(value[:, -2:])  # Only last two columns
+                            # Only take last 6 columns: distance, angle, dx, dy, dz, seq_sep
+                            all_tensors[key].append(value[:, 6:])
                         else:
                             all_tensors[key].append(value)
-    
-    # Initialize a dictionary to store the mean and std per key
+
+    # Now calculate mean and std per feature key
     stats = {}
 
     for key, tensors in all_tensors.items():
-        concatenated_tensor = torch.cat(tensors, dim=0)
-        mean = concatenated_tensor.mean(dim=0)
-        std = concatenated_tensor.std(dim=0)
+        concatenated = torch.cat(tensors, dim=0)
+        mean = concatenated.mean(dim=0)
+        std = concatenated.std(dim=0)
         stats[key] = {'mean': mean, 'std': std}
-    
+
     return stats
 
 # Example usage
-for dataset in ['davis', 'kiba', 'full_toxcast']:
-    print(dataset)
-    data_directory = f"./data/{dataset}/protein_graphs"
-    stats = calculate_mean_std_per_key(data_directory)
+if __name__ == "__main__":
+    for dataset in ['davis', 'kiba', 'full_toxcast']:
+        # keep only davis and kiba
+        if dataset not in ['davis', 'kiba']:
+            continue
+        print(f"Processing {dataset}")
+        data_directory = f"./data/{dataset}/protein_graphs/with_embeddings"
+        stats = calculate_mean_std_per_key(data_directory)
 
-    # Save stats to a file
-    with open(f'./data/{dataset}_stats.pkl', 'wb') as f:
-        pickle.dump(stats, f)
+        with open(f'./data/{dataset}_stats.pkl', 'wb') as f:
+            pickle.dump(stats, f)
 
-    # Print the stats
-    for key, value in stats.items():
-        print(f"Key: {key}")
-        print(f"Mean: {value['mean']}")
-        print(f"Std: {value['std']}")
+        for key, value in stats.items():
+            print(f"\nKey: {key}")
+            print(f"Mean: {value['mean']}")
+            print(f"Std: {value['std']}")

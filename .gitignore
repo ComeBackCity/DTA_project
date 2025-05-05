@@ -20,3 +20,6 @@ regression/data/full_toxcast_mostats.pkl
 regression/data/full_toxcast_stats.pkl
 regression/data/kiba_mostats.pkl
 regression/data/kiba_stats.pkl
+regression/data/davis/embeddings/
+regression/data/kiba/embeddings/
+regression/data/full_toxcast/embeddings/

@@ -1,426 +1,215 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch_geometric.nn import global_mean_pool
-from torch.nn.modules.batchnorm import _BatchNorm
-import torch_geometric.nn as gnn
-from torch import Tensor
-from collections import OrderedDict
-from egret import EGRETLayer, MultiHeadEGRETLayer, config_dict
-from mask_test import create_attention_mask
-from pe import apply_positional_encoding_to_batch, PositionalEncoding
+import torch.functional
+from torch_geometric.nn import GINEConv, GlobalAttention
+from torch_geometric.utils import to_dense_adj, degree, subgraph
+from torch_geometric.data import Data
 
-'''
-MGraphDTA: Deep Multiscale Graph Neural Network for Explainable Drug-target binding affinity Prediction
-'''
+# --- Custom BatchNorm over all nodes in the batch ---
+class NodeLevelBatchNorm(torch.nn.modules.batchnorm._BatchNorm):
+    def __init__(self, num_features, eps=1e-5, momentum=0.1,
+                 affine=True, track_running_stats=True):
+        super().__init__(num_features, eps, momentum,
+                         affine, track_running_stats)
 
-
-class Conv1dReLU(nn.Module):
-    '''
-    kernel_size=3, stride=1, padding=1
-    kernel_size=5, stride=1, padding=2
-    kernel_size=7, stride=1, padding=3
-    '''
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0):
-        super().__init__()
-        self.inc = nn.Sequential(
-            nn.Conv1d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride, padding=padding),
-            nn.ReLU()
-        )
-    
-    def forward(self, x):
-
-        return self.inc(x)
-
-class LinearReLU(nn.Module):
-    def __init__(self,in_features, out_features, bias=True):
-        super().__init__()
-        self.inc = nn.Sequential(
-            nn.Linear(in_features=in_features, out_features=out_features, bias=bias),
-            nn.ReLU()
-        )
+    def _check_input_dim(self, x):
+        if x.dim() != 2:
+            raise ValueError(f'expected 2D input (got {x.dim()}D)')
 
     def forward(self, x):
-        
-        return self.inc(x)
-
-class StackCNN(nn.Module):
-    def __init__(self, layer_num, in_channels, out_channels, kernel_size, stride=1, padding=0):
-        super().__init__()
-
-        self.inc = nn.Sequential(OrderedDict([('conv_layer0', Conv1dReLU(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding))]))
-        for layer_idx in range(layer_num - 1):
-            self.inc.add_module('conv_layer%d' % (layer_idx + 1), Conv1dReLU(out_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding))
-
-        self.inc.add_module('pool_layer', nn.AdaptiveMaxPool1d(1))
-
-    def forward(self, x):
-        return self.inc(x).squeeze(-1)
-
-class TargetRepresentation(nn.Module):
-    def __init__(self, block_num, vocab_size, embedding_num):
-        super().__init__()
-        self.embed = nn.Embedding(vocab_size, embedding_num, padding_idx=0)
-        self.block_list = nn.ModuleList()
-        for block_idx in range(block_num):
-            self.block_list.append(
-                StackCNN(block_idx+1, embedding_num, 96, 3)
-            )
-
-        self.linear = nn.Linear(block_num * 96, 96)
-        
-    def forward(self, x):
-        x = self.embed(x).permute(0, 2, 1)
-        feats = [block(x) for block in self.block_list]
-        x = torch.cat(feats, -1)
-        x = self.linear(x)
-
-        return x
-
-class NodeLevelBatchNorm(_BatchNorm):
-    r"""
-    Applies Batch Normalization over a batch of graph data.
-    Shape:
-        - Input: [batch_nodes_dim, node_feature_dim]
-        - Output: [batch_nodes_dim, node_feature_dim]
-    batch_nodes_dim: all nodes of a batch graph
-    """
-
-    def __init__(self, num_features, eps=1e-5, momentum=0.1, affine=True,
-                 track_running_stats=True):
-        super(NodeLevelBatchNorm, self).__init__(
-            num_features, eps, momentum, affine, track_running_stats)
-
-    def _check_input_dim(self, input):
-        if input.dim() != 2:
-            raise ValueError('expected 2D input (got {}D input)'
-                             .format(input.dim()))
-
-    def forward(self, input):
-        self._check_input_dim(input)
+        self._check_input_dim(x)
         if self.momentum is None:
-            exponential_average_factor = 0.0
+            avg_factor = 0.0
         else:
-            exponential_average_factor = self.momentum
+            avg_factor = self.momentum
         if self.training and self.track_running_stats:
             if self.num_batches_tracked is not None:
-                self.num_batches_tracked = self.num_batches_tracked + 1
+                self.num_batches_tracked += 1
                 if self.momentum is None:
-                    exponential_average_factor = 1.0 / float(self.num_batches_tracked)
+                    avg_factor = 1.0 / float(self.num_batches_tracked)
                 else:
-                    exponential_average_factor = self.momentum
+                    avg_factor = self.momentum
 
         return torch.functional.F.batch_norm(
-            input, self.running_mean, self.running_var, self.weight, self.bias,
+            x,
+            self.running_mean,
+            self.running_var,
+            self.weight,
+            self.bias,
             self.training or not self.track_running_stats,
-            exponential_average_factor, self.eps)
-
-    def extra_repr(self):
-        return 'num_features={num_features}, eps={eps}, ' \
-               'affine={affine}'.format(**self.__dict__)
-
-class GraphConvBn(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super().__init__()
-        self.conv = gnn.GraphConv(in_channels, out_channels)
-        self.norm = NodeLevelBatchNorm(out_channels)
-
-    def forward(self, data):
-        x, edge_index, batch = data.x, data.edge_index, data.batch
-        data.x = F.relu(self.norm(self.conv(x, edge_index)))
-
-        return data
-
-class DenseLayer(nn.Module):
-    def __init__(self, num_input_features, growth_rate=32, bn_size=4):
-        super().__init__()
-        self.conv1 = GraphConvBn(num_input_features, int(growth_rate * bn_size))
-        self.conv2 = GraphConvBn(int(growth_rate * bn_size), growth_rate)
-
-    def bn_function(self, data):
-        concated_features = torch.cat(data.x, 1)
-        data.x = concated_features
-
-        data = self.conv1(data)
-
-        return data
-    
-    def forward(self, data):
-        if isinstance(data.x, Tensor):
-            data.x = [data.x]
-
-        data = self.bn_function(data)
-        data = self.conv2(data)
-
-        return data
-
-class DenseBlock(nn.ModuleDict):
-    def __init__(self, num_layers, num_input_features, growth_rate=32, bn_size=4):
-        super().__init__()
-        for i in range(num_layers):
-            layer = DenseLayer(num_input_features + i * growth_rate, growth_rate, bn_size)
-            self.add_module('layer%d' % (i + 1), layer)
-
-
-    def forward(self, data):
-        features = [data.x]
-        for name, layer in self.items():
-            data = layer(data)
-            features.append(data.x)
-            data.x = features
-
-        data.x = torch.cat(data.x, 1)
-
-        return data
-
-
-class GraphDenseNet(nn.Module):
-    def __init__(self, num_input_features, out_dim, growth_rate=32, block_config = (3, 3, 3, 3), bn_sizes=[2, 3, 4, 4]):
-        super().__init__()
-        self.features = nn.Sequential(OrderedDict([('conv0', GraphConvBn(num_input_features, out_dim))]))
-
-        for i, num_layers in enumerate(block_config):
-            block = DenseBlock(
-                num_layers, num_input_features, growth_rate=growth_rate, bn_size=bn_sizes[i]
-            )
-            self.features.add_module('block%d' % (i+1), block)
-            num_input_features += int(num_layers * growth_rate)
-
-            trans = GraphConvBn(num_input_features, num_input_features // 2)
-            self.features.add_module("transition%d" % (i+1), trans)
-            num_input_features = num_input_features // 2
-
-        # self.classifer = nn.Linear(num_input_features, out_dim)
-        self.sa = nn.MultiheadAttention(
-            embed_dim=out_dim, 
-            num_heads=4, 
-            dropout=0.2
+            avg_factor,
+            self.eps
         )
-        
 
-    def forward(self, data):
-        data = self.features(data)
-        attn_feat, _ = self.sa(data.x, data.x, data.x)
-        x = data.x + attn_feat
+# --- Helpers for Laplacian Positional Encoding ---
+def extract_individual_graphs(edge_index, batch):
+    graphs = []
+    for gid in batch.unique():
+        mask = (batch == gid)
+        sub_ei, _ = subgraph(mask, edge_index, relabel_nodes=True)
+        graphs.append(Data(edge_index=sub_ei,
+                           num_nodes=int(mask.sum())))
+    return graphs
 
-        return x
-
-class egretblock(nn.Module):
-    def __init__(self, in_dim, edge_dim, num_heads=1) -> None:
+class LaplacianPositionalEncoding(nn.Module):
+    def __init__(self, k: int):
         super().__init__()
-                
-        out_dim = in_dim // num_heads
-        self.egret_layer = gnn.GATv2Conv(in_channels=in_dim, 
-                                        out_channels=out_dim,
-                                        heads=num_heads,
-                                        concat=True, 
-                                        negative_slope=0.2, 
-                                        dropout=0.2, add_self_loops = True, 
-                                        edge_dim=edge_dim, fill_value = 'mean', bias = True)
-        
-        self.bn1 = NodeLevelBatchNorm(in_dim)
-        self.attn_drop = nn.Dropout(0.2)
-        
-        self.encoder = nn.Sequential(
-            NodeLevelBatchNorm(in_dim),
-            nn.Linear(in_dim, in_dim),
-            nn.GELU(),
-            nn.Dropout(0.2),
-        )
-                
-    def forward(self, x, edge_index, edge_attr):
-        
-        # print(x)
-        attn_feat = self.egret_layer(self.bn1(x), edge_index, edge_attr)
-        z = x + self.attn_drop(attn_feat)
-        z1 = self.encoder(z)
-        z = z + z1
-        
-        return z
-         
-    
-class GraphEncoder(nn.Module):
-    def __init__(self, in_dim, hidden_dim, out_dim, edge_dim, layer_count) -> None:
-        super().__init__()
-        
-        self.reshaper = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
-            nn.LeakyReLU(0.02),
-            NodeLevelBatchNorm(hidden_dim),
-            nn.Dropout(0.2)
-        )
-        
-        layers = [
-            (
-                egretblock(in_dim=hidden_dim, edge_dim=edge_dim, num_heads=4), 
-                ('x, edge_index, edge_attr -> x')
-            )
-                for _ in range(layer_count)
-        ]
-        
-        self.gnn_block = gnn.Sequential(
-            'x, edge_index, edge_attr', layers
-        )
-        
-        self.reducer = Mlp(
-            in_features=hidden_dim, 
-            hidden_features=hidden_dim, 
-            out_features=out_dim,
-            act_layer=nn.LeakyReLU(0.02),
-            drop=0.2
-        )
-        
-    def forward(self, x, edge_index, edge_attr): 
-        
-        z = self.reshaper(x)
-        z = self.gnn_block(z, edge_index, edge_attr)
-        z = self.reducer(z)
+        self.k = k
 
-        return z
-    
-class Mlp(nn.Module):
-    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
+    def forward(self, edge_index, batch, N):
+        device = edge_index.device
+        pos = torch.zeros(N, self.k, device=device)
+        for gid, g in enumerate(extract_individual_graphs(edge_index, batch)):
+            n = g.num_nodes
+            if n == 0: continue
+            A = to_dense_adj(g.edge_index, max_num_nodes=n)[0]
+            deg = degree(g.edge_index[0], n, dtype=torch.float32)
+            Dinv = torch.diag(deg.pow(-0.5)); Dinv[torch.isinf(Dinv)] = 0.0
+            L = torch.eye(n, device=device) - Dinv @ A @ Dinv
+            try:
+                eigvecs = torch.linalg.eigh(L)[1][:, :self.k]
+            except RuntimeError:
+                eigvecs = torch.randn(n, self.k, device=device)
+            idx = (batch == gid).nonzero(as_tuple=True)[0]
+            if idx.numel() == n:
+                pos[idx] = eigvecs
+        return pos
+
+# --- 1D‑CNN block to replace MLP in GINEConv ---
+class Conv1dBlock(nn.Module):
+    def __init__(self, in_features, hidden, kernel_size=3, padding=1):
         super().__init__()
-        out_features = out_features or in_features
-        hidden_features = hidden_features or in_features
-        self.fc1 = nn.Linear(in_features, hidden_features)
-        self.act = act_layer
-        self.fc2 = nn.Linear(hidden_features, out_features)
-        self.drop = nn.Dropout(drop)
+        self.in_features = in_features
+        self.net = nn.Sequential(
+            nn.Conv1d(in_features, hidden, kernel_size, padding=padding),
+            nn.ReLU(),
+            nn.Conv1d(hidden, in_features, kernel_size, padding=padding),
+        )
 
     def forward(self, x):
-        z = self.fc1(x)
-        z = self.act(z)
-        x = self.drop(z)
-        z = self.fc2(z)
-        z = self.drop(z)
-        return z
+        # x: [E, in_features] → [E, in_features, 1]
+        x = x.unsqueeze(-1)
+        x = self.net(x)         # [E, in_features, 1]
+        return x.squeeze(-1)    # [E, in_features]
 
+# --- GIN‑variant encoder with 1D‑CNN in GINEConv + residuals ---
+class GraphEncoder(nn.Module):
+    def __init__(self, in_dim, hid_dim, out_dim,
+                 edge_dim, n_layers, pe_dim=6):
+        super().__init__()
+        self.pe = LaplacianPositionalEncoding(pe_dim)
+        self.init_lin = nn.Sequential(
+            nn.Linear(in_dim + pe_dim, hid_dim),
+            nn.LeakyReLU(0.02),
+            NodeLevelBatchNorm(hid_dim),
+            nn.Dropout(0.2),
+        )
+        self.layers = nn.ModuleList()
+        for _ in range(n_layers):
+            conv_block = Conv1dBlock(hid_dim, hid_dim)
+            self.layers += [
+                GINEConv(nn=conv_block, train_eps=True, edge_dim=edge_dim),
+                NodeLevelBatchNorm(hid_dim),
+                nn.LeakyReLU(0.02),
+                nn.Dropout(0.2),
+            ]
+        self.pool = GlobalAttention(gate_nn=nn.Sequential(
+            nn.Linear(hid_dim, 1), nn.Sigmoid()
+        ))
+        self.out_lin = nn.Linear(hid_dim, out_dim)
 
+    def forward(self, x, edge_index, edge_attr, batch):
+        N = x.size(0)
+        pos = self.pe(edge_index, batch, N)
+        x = self.init_lin(torch.cat([x, pos], dim=1))
+        for layer in self.layers:
+            if isinstance(layer, GINEConv):
+                x_res = x
+                x = layer(x, edge_index, edge_attr)
+                x = x + x_res
+            else:
+                x = layer(x)
+        x = self.pool(x, batch)
+        return self.out_lin(x)
+
+# --- Custom multi‑head cross‑attention with residuals ---
 class MultiHeadAttention(nn.Module):
-    def __init__(self, d_model, num_heads, dropout):
-        super(MultiHeadAttention, self).__init__()
-        
-        assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
-        
-        self.d_model = d_model
-        self.num_heads = num_heads
+    def __init__(self, d_model, num_heads, dropout=0.):
+        super().__init__()
+        assert d_model % num_heads == 0, "d_model must divide num_heads"
         self.d_k = d_model // num_heads
-        
-        self.linear1 = nn.Linear(d_model, d_model)
-        self.linear2 = nn.Linear(d_model, d_model * 2)
-        
-        self.out_linear = nn.Linear(d_model, d_model)
-        
+        self.num_heads = num_heads
+        self.q_lin = nn.Linear(d_model, d_model)
+        self.kv_lin = nn.Linear(d_model, d_model * 2)
+        self.out_lin = nn.Linear(d_model, d_model)
         self.softmax = nn.Softmax(dim=-1)
         self.attn_drop = nn.Dropout(dropout)
         self.proj_drop = nn.Dropout(dropout)
-        
-    def forward(self, x1, x2, mask=None):
-        N = x2.shape[0]
-        
-        q = self.linear1(x1)
-        z = self.linear2(x2)
-        z = torch.reshape(z, (2, N, self.d_model))
-        k, v = z[0], z[1]
-                
-        # Reshape into (batch_size, num_heads, seq_len, d_k)
-        query = q.view(-1, self.num_heads, self.d_k).transpose(0, 1)
-        key = k.view(-1, self.num_heads, self.d_k).transpose(0, 1)
-        value = v.view(-1, self.num_heads, self.d_k).transpose(0, 1)
-                
-        # Scaled dot-product attention
-        scale = torch.sqrt(torch.tensor(self.d_k, dtype=torch.float32))
-        scores = torch.matmul(query, key.transpose(2, 1)) / scale
-        
+
+    def forward(self, x_q, x_kv, mask=None):
+        B, Lq, D = x_q.shape
+        _, Lk, _ = x_kv.shape
+        q = self.q_lin(x_q).view(B, Lq, self.num_heads, self.d_k).transpose(1,2)
+        kv = self.kv_lin(x_kv).view(B, Lk, 2, self.num_heads, self.d_k)
+        k, v = kv[:,:,0].transpose(1,2), kv[:,:,1].transpose(1,2)
+        scores = (q @ k.transpose(-2,-1)) / (self.d_k ** 0.5)
         if mask is not None:
-            scores = scores.masked_fill(mask == 0, -1e9)
-        
-        attention_weights = self.softmax(scores)
-        attention_weights = self.attn_drop(attention_weights)
-        attention_output = torch.matmul(attention_weights, value)
-        
-        # Concatenate heads
-        attention_output = attention_output.transpose(0, 1).contiguous().view(-1, self.d_model)
-        
-        # Final linear layer
-        output = self.proj_drop(self.out_linear(attention_output))
-        
-        return output, attention_weights
+            scores = scores.masked_fill(mask==0, float('-inf'))
+        attn = self.softmax(scores); attn = self.attn_drop(attn)
+        out = (attn @ v).transpose(1,2).contiguous().view(B, Lq, D)
+        return self.proj_drop(self.out_lin(out)), attn
 
-class MGraphDTA(nn.Module):
-    def __init__(self, protein_feat_dim, drug_feat_dim, protein_edge_dim, drug_edge_dim, filter_num=32, out_dim=1):
+# --- Simple MLP classifier ---
+class Mlp(nn.Module):
+    def __init__(self, in_f, hid_f, out_f, drop=0.):
         super().__init__()
-    
-        self.protein_encoder = GraphEncoder(protein_feat_dim, 512, filter_num, protein_edge_dim, 2)
-        self.ligand_encoder = GraphEncoder(drug_feat_dim, 64, filter_num, drug_edge_dim, 1)
-        
-        # self.cross_attn1 = nn.MultiheadAttention(
-        #     embed_dim=filter_num, 
-        #     num_heads=4, 
-        #     dropout=0.2
-        # )
-        
-        # self.cross_attn2 = nn.MultiheadAttention(
-        #     embed_dim=filter_num, 
-        #     num_heads=4, 
-        #     dropout=0.2
-        # )
-        
-        self.cross_attn1 = MultiHeadAttention(
-            d_model=filter_num, 
-            num_heads=4, 
-            dropout=0.2
+        self.net = nn.Sequential(
+            nn.Linear(in_f, hid_f),
+            nn.LeakyReLU(),
+            NodeLevelBatchNorm(hid_f),
+            nn.Dropout(drop),
+            nn.Linear(hid_f, out_f),
         )
-        
-        self.cross_attn2 = MultiHeadAttention(
-            d_model=filter_num, 
-            num_heads=4, 
-            dropout=0.2
-        )
+    def forward(self, x):
+        return self.net(x)
 
-        self.classifier = Mlp(
-            in_features=filter_num * 2,
-            hidden_features=8,
-            out_features=1,
-            act_layer=nn.LeakyReLU(0.02),
-            drop=0.2
+# --- Full MGraphDTA model with residual cross‑attention ---
+class MGraphDTA(nn.Module):
+    def __init__(self,
+                 prot_feat_dim, drug_feat_dim,
+                 prot_edge_dim, drug_edge_dim,
+                 filt=64, out_f=1,
+                 pe_dim=10, prot_layers=6,
+                 drug_layers=3, heads=4):
+        super().__init__()
+        self.prot_enc = GraphEncoder(
+            in_dim=prot_feat_dim, hid_dim=filt,
+            out_dim=filt, edge_dim=prot_edge_dim,
+            n_layers=prot_layers, pe_dim=pe_dim
         )
-        
-        self.prot_pe = PositionalEncoding(d_model = filter_num, dropout = 0.2, max_len = 2800)
-        self.mol_pe = PositionalEncoding(d_model = filter_num, dropout = 0.2, max_len = 30)
+        self.drug_enc = GraphEncoder(
+            in_dim=drug_feat_dim, hid_dim=filt,
+            out_dim=filt, edge_dim=drug_edge_dim,
+            n_layers=drug_layers, pe_dim=pe_dim
+        )
+        self.cross1 = MultiHeadAttention(filt, heads, dropout=0.2)
+        self.cross2 = MultiHeadAttention(filt, heads, dropout=0.2)
+        self.classifier = Mlp(filt*2, 128, out_f, drop=0.2)
 
     def forward(self, data):
-        
-        protein = data[1]
-        drug = data[0]
-                
-        prot_x = self.protein_encoder(protein.x, protein.edge_index, protein.edge_attr)
-        ligand_x = self.ligand_encoder(drug.x, drug.edge_index, drug.edge_attr)
-        
-        prot_x = apply_positional_encoding_to_batch(prot_x, protein.batch, self.prot_pe)
-        mol_x = apply_positional_encoding_to_batch(ligand_x, drug.batch, self.mol_pe)
-        
-        attn_mask1 = create_attention_mask(drug.batch, protein.batch)
-        attn_mask2 = create_attention_mask(protein.batch, drug.batch)
-           
-        attn_feat1, _ = self.cross_attn1(prot_x, mol_x, mask=attn_mask1)       
-        attn_feat2, _ = self.cross_attn2(mol_x, prot_x, mask=attn_mask2)
-        
-        protein_x = prot_x + attn_feat1
-        molecule_x = mol_x + attn_feat2
-        
-        feat1 = gnn.global_mean_pool(protein_x, protein.batch)
-        feat2 = gnn.global_mean_pool(molecule_x, drug.batch)
-        # feat3 = gnn.global_mean_pool(prot_x, protein.batch)
-        # feat4 = gnn.global_mean_pool(mol_x, drug.batch)
-        # feat5 = gnn.global_mean_pool(attn_feat1, protein.batch)
-        # feat6 = gnn.global_mean_pool(attn_feat2, drug.batch)
+        drug, prot, _ = data
+        x_p = self.prot_enc(prot.x, prot.edge_index,
+                            prot.edge_attr, prot.batch)
+        x_d = self.drug_enc(drug.x, drug.edge_index,
+                            drug.edge_attr, drug.batch)
 
-        # x = torch.cat([feat1, feat2, feat3, feat4, feat5, feat6], dim=-1)
-        x = torch.cat([feat1, feat2], dim=-1)
-        x = self.classifier(x)
+        x_p = x_p.unsqueeze(1)
+        x_d = x_d.unsqueeze(1)
 
-        return x
+        a1, _ = self.cross1(x_p, x_d)
+        a2, _ = self.cross2(x_d, x_p)
 
+        x_p = (x_p + a1).squeeze(1)
+        x_d = (x_d + a2).squeeze(1)
 
+        return self.classifier(torch.cat([x_p, x_d], dim=1))

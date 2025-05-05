@@ -1,34 +1,35 @@
-import os.path as osp
-import numpy as np
-import torch
 import os
+import os.path as osp
+import random
+import pickle
+import numpy as np
 import pandas as pd
-from torch_geometric.data import InMemoryDataset
+import torch
 from torch_geometric import data as DATA
-from rdkit import Chem
-from rdkit.Chem import MolFromSmiles
+from tqdm import tqdm
 import networkx as nx
 from rdkit import Chem
-from rdkit.Chem import ChemicalFeatures
+from rdkit.Chem import ChemicalFeatures, AllChem
 from rdkit import RDConfig
-from tqdm import tqdm
-import re
-from tdc.multi_pred import DTI
-import sys
-sys.path.append("../")
-import gc
-import pickle
-import gc
-import pickle
-import random
+
+# -----------------------------------------------------------------------------
+# Chemical feature factory
+# -----------------------------------------------------------------------------
 fdef_name = osp.join(RDConfig.RDDataDir, 'BaseFeatures.fdef')
 chem_feature_factory = ChemicalFeatures.BuildFeatureFactory(fdef_name)
 
+# -----------------------------------------------------------------------------
+# Precomputed element properties
+# -----------------------------------------------------------------------------
+electronegativity = {
+    'H': 2.20, 'B': 2.04, 'C': 2.55, 'N': 3.04, 'O': 3.44, 'F': 3.98,
+    'Si': 1.90, 'P': 2.19, 'S': 2.58, 'Cl': 3.16, 'Br': 2.96, 'I': 2.66
+}
 
-'''
-Note that training and test datasets are the same as GraphDTA
-Please see: https://github.com/thinng/GraphDTA
-'''
+vdw_radius = {
+    'H': 1.20, 'B': 2.00, 'C': 1.70, 'N': 1.55, 'O': 1.52, 'F': 1.47,
+    'Si': 2.10, 'P': 1.80, 'S': 1.80, 'Cl': 1.75, 'Br': 1.85, 'I': 1.98
+}
 
 atomic_properties = {
     'H': {'atomic_mass': 1.008, 'a_num': 1},
@@ -39,158 +40,195 @@ atomic_properties = {
     'F': {'atomic_mass': 18.998, 'a_num': 9},
     'Si': {'atomic_mass': 28.085, 'a_num': 14},
     'P': {'atomic_mass': 30.974, 'a_num': 15},
-    'Cl': {'atomic_mass': 35.45, 'a_num': 17},
     'S': {'atomic_mass': 32.06, 'a_num': 16},
+    'Cl': {'atomic_mass': 35.45, 'a_num': 17},
     'Br': {'atomic_mass': 79.904, 'a_num': 35},
     'I': {'atomic_mass': 126.904, 'a_num': 53}
 }
 
-def setup_seed(seed):
-    random.seed(seed)                          
-    np.random.seed(seed)                       
-    torch.manual_seed(seed)                    
-    torch.cuda.manual_seed(seed)               
-    torch.cuda.manual_seed_all(seed)           
-    torch.backends.cudnn.deterministic = True  
+# Protection: check at start
+assert isinstance(atomic_properties, dict), "atomic_properties must be a dictionary!"
 
-def process(dataset_name):
-    if dataset_name == "davis" or dataset_name == 'kiba':
-        df_train = pd.read_csv(f"./data/{dataset_name}/csvs/{dataset_name}_train_42.csv")
-        df_valid = pd.read_csv(f"./data/{dataset_name}/csvs/{dataset_name}_valid_42.csv")
-        df_test = pd.read_csv(f"./data/{dataset_name}/csvs/{dataset_name}_test_42.csv")
-        df = pd.concat([df_train, df_valid, df_test])
-    elif dataset_name == 'full_toxcast':
-        df_train = pd.read_csv("./data/full_toxcast/raw/data_train.csv")
-        df_test = pd.read_csv("./data/full_toxcast/raw/data_test.csv")
-        df = pd.concat([df_train, df_test])
-        
-    key_name = "smiles" if dataset_name == "full_toxcast" else "compound_iso_smiles"
+# -----------------------------------------------------------------------------
+# Helper Functions
+# -----------------------------------------------------------------------------
+def setup_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
 
-    smiles = df[key_name].unique()
-    graph_dict = dict()
-    for smile in tqdm(smiles, total=len(smiles)):
-        mol = Chem.MolFromSmiles(smile)
-        g = mol2graph(mol)
-        g = DATA.Data(x=g[0], edge_index=g[1], edge_attr=g[2])
-        graph_dict[smile] = g
+def compute_gasteiger(mol):
+    try:
+        AllChem.ComputeGasteigerCharges(mol)
+    except:
+        pass
 
-    with open(f"./data/{dataset_name}_molecule.pkl", "wb" ) as f:
-        pickle.dump(graph_dict, f)
+def float_flag(x):
+    return 1.0 if x else 0.0
 
-def get_nodes(g):
-    feat = []
-    
-    for n, d in g.nodes(data=True):
-        h_t = []
-        h_t += [int(d['a_type'] == x) for x in ['H', 'B', 'C', 'N', 'O', 'F', 
-                                                'Si', 'P', 'Cl', 'S', 'Br', 'I']]
-        h_t.append(d['acceptor'])
-        h_t.append(d['donor'])
-        h_t.append(int(d['aromatic']))
-        h_t += [int(d['hybridization'] == x) \
-                for x in (Chem.rdchem.HybridizationType.SP, \
-                            Chem.rdchem.HybridizationType.SP2,
-                            Chem.rdchem.HybridizationType.SP3)]
-        
-        # 5 more
-        h_t.append(int(d['isInRing']))
-        h_t.append(d['num_h'])
-        h_t.append(d['ExplicitValence'])
-        h_t.append(d['FormalCharge'])
-        h_t.append(d['ImplicitValence'])
-        h_t.append(d['NumExplicitHs'])
-        h_t.append(d['NumRadicalElectrons'])
-        
-        # Use the standard atomic mass and number
-        atomic_mass = atomic_properties[d['a_type']]['atomic_mass']
-        a_num = atomic_properties[d['a_type']]['a_num']
-        h_t.append(atomic_mass)
-        h_t.append(a_num)
-        feat.append((n, h_t))
-    feat.sort(key=lambda item: item[0])
-    node_attr = torch.FloatTensor([item[1] for item in feat])
+def distance(xyz1, xyz2):
+    return np.linalg.norm(np.array(xyz1) - np.array(xyz2))
 
-    return node_attr
+def angle(xyz1, xyz2, xyz3):
+    v1 = np.array(xyz1) - np.array(xyz2)
+    v2 = np.array(xyz3) - np.array(xyz2)
+    cosine_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-8)
+    return np.arccos(np.clip(cosine_angle, -1.0, 1.0))
 
-def get_edges(g):
-    e = {}
-    for n1, n2, d in g.edges(data=True):
-        e_t = [int(d['b_type'] == x)
-                for x in (Chem.rdchem.BondType.SINGLE, \
-                            Chem.rdchem.BondType.DOUBLE, \
-                            Chem.rdchem.BondType.TRIPLE, \
-                            Chem.rdchem.BondType.AROMATIC)]
+def torsion(xyz1, xyz2, xyz3, xyz4):
+    p0 = np.array(xyz1)
+    p1 = np.array(xyz2)
+    p2 = np.array(xyz3)
+    p3 = np.array(xyz4)
+    b0 = -1.0 * (p1 - p0)
+    b1 = p2 - p1
+    b2 = p3 - p2
+    b1 /= (np.linalg.norm(b1) + 1e-8)
+    v = b0 - np.dot(b0, b1) * b1
+    w = b2 - np.dot(b2, b1) * b1
+    x = np.dot(v, w)
+    y = np.dot(np.cross(b1, v), w)
+    return np.arctan2(y, x)
 
-        e_t.append(int(d['IsConjugated']))
-        e_t.append(int(d['IsAromatic']))
-        e[(n1, n2)] = e_t
+def get_atom_features(atom, mol, coords, centroid):
+    sym = atom.GetSymbol()
+    idx = atom.GetIdx()
+    props = atomic_properties.get(sym, {'atomic_mass': 0.0, 'a_num': 0})
 
-    if len(e) == 0:
-        return torch.LongTensor([[0], [0]]), torch.FloatTensor([[0, 0, 0, 0, 0, 0]])
+    features = []
+    features += [float_flag(sym == x) for x in atomic_properties.keys()]
+    features.append(float_flag(atom.GetIsAromatic()))
+    features.append(float_flag(atom.IsInRing()))
+    features.append(float_flag(atom.GetHybridization() == Chem.rdchem.HybridizationType.SP))
+    features.append(float_flag(atom.GetHybridization() == Chem.rdchem.HybridizationType.SP2))
+    features.append(float_flag(atom.GetHybridization() == Chem.rdchem.HybridizationType.SP3))
+    features.append(float_flag(atom.HasProp('_CIPCode')))
 
-    edge_index = torch.LongTensor(list(e.keys())).transpose(0, 1)
-    edge_attr = torch.FloatTensor(list(e.values()))
-    return edge_index, edge_attr
+    continuous = [
+        float(atom.GetTotalNumHs()),
+        float(atom.GetDegree()),
+        float(atom.GetExplicitValence()),
+        float(atom.GetFormalCharge()),
+        float(atom.GetImplicitValence()),
+        float(atom.GetNumRadicalElectrons()),
+        float(props['atomic_mass']),
+        float(props['a_num']),
+        float(electronegativity.get(sym, 0.0)),
+        float(vdw_radius.get(sym, 0.0)),
+        float(atom.GetProp('_GasteigerCharge')) if atom.HasProp('_GasteigerCharge') else 0.0,
+        float(mol.GetRingInfo().NumAtomRings(idx))
+    ]
+    features += continuous
+
+    # 3D Derived Features (NO xyz included)
+    dist_to_centroid = distance(coords[idx], centroid)
+    local_density = sum(distance(coords[idx], coords[j]) < 3.0 for j in range(len(coords)) if j != idx)
+    features.append(dist_to_centroid)
+    features.append(local_density)
+
+    features += [0.0, 0.0]  # Donor/Acceptor placeholders
+
+    return features
+
+def get_bond_features(bond, coords):
+    u, v = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+    bond_length = distance(coords[u], coords[v])
+
+    bond_angle = 0.0
+    torsion_angle = 0.0
+
+    u_neighbors = [n.GetIdx() for n in bond.GetBeginAtom().GetNeighbors() if n.GetIdx() != v]
+    v_neighbors = [n.GetIdx() for n in bond.GetEndAtom().GetNeighbors() if n.GetIdx() != u]
+
+    if u_neighbors:
+        bond_angle = angle(coords[u_neighbors[0]], coords[u], coords[v])
+    if len(u_neighbors) > 0 and len(v_neighbors) > 0:
+        torsion_angle = torsion(coords[u_neighbors[0]], coords[u], coords[v], coords[v_neighbors[0]])
+
+    return [
+        float(bond.GetBondTypeAsDouble()),
+        float_flag(bond.GetIsConjugated()),
+        float_flag(bond.GetIsAromatic()),
+        float_flag(bond.GetStereo() == Chem.rdchem.BondStereo.STEREOZ),
+        float_flag(bond.GetStereo() == Chem.rdchem.BondStereo.STEREOE),
+        bond_length,
+        bond_angle,
+        torsion_angle
+    ]
 
 def mol2graph(mol):
     if mol is None:
         return None
+
+    mol = Chem.AddHs(mol)
+    try:
+        AllChem.EmbedMolecule(mol, randomSeed=42)
+    except:
+        return None  # skip molecules where 3D fails
+
+    try:
+        coords = mol.GetConformer().GetPositions()
+    except:
+        return None
+
+    centroid = np.mean(coords, axis=0)
+    compute_gasteiger(mol)
+    g = nx.Graph()
+
+    for i, atom in enumerate(mol.GetAtoms()):
+        g.add_node(i, features=get_atom_features(atom, mol, coords, centroid))
+
     feats = chem_feature_factory.GetFeaturesForMol(mol)
-    g = nx.DiGraph()
+    for f in feats:
+        family = f.GetFamily()
+        for atom_id in f.GetAtomIds():
+            if family == 'Donor':
+                g.nodes[atom_id]['features'][-2] = 1.0
+            elif family == 'Acceptor':
+                g.nodes[atom_id]['features'][-1] = 1.0
 
-    # Create nodes
-    for i in range(mol.GetNumAtoms()):
-        atom_i = mol.GetAtomWithIdx(i)
-        g.add_node(i,
-                    a_type=atom_i.GetSymbol(),
-                    a_num=atom_i.GetAtomicNum(),
-                    acceptor=0,
-                    donor=0,
-                    aromatic=atom_i.GetIsAromatic(),
-                    hybridization=atom_i.GetHybridization(),
-                    num_h=atom_i.GetTotalNumHs(),
-                    atomic_mass=atom_i.GetMass(),
-                    # 5 more node features
-                    ExplicitValence=atom_i.GetExplicitValence(),
-                    FormalCharge=atom_i.GetFormalCharge(),
-                    ImplicitValence=atom_i.GetImplicitValence(),
-                    NumExplicitHs=atom_i.GetNumExplicitHs(),
-                    NumImplicitHs=atom_i.GetNumImplicitHs(),
-                    NumRadicalElectrons=atom_i.GetNumRadicalElectrons(),
-                    isInRing=atom_i.IsInRing()
-                    )
+    for bond in mol.GetBonds():
+        u, v = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+        g.add_edge(u, v, features=get_bond_features(bond, coords))
 
-    for i in range(len(feats)):
-        if feats[i].GetFamily() == 'Donor':
-            node_list = feats[i].GetAtomIds()
-            for n in node_list:
-                g.nodes[n]['donor'] = 1
-        elif feats[i].GetFamily() == 'Acceptor':
-            node_list = feats[i].GetAtomIds()
-            for n in node_list:
-                g.nodes[n]['acceptor'] = 1
+    x = torch.tensor([g.nodes[i]['features'] for i in g.nodes()], dtype=torch.float)
+    if g.edges():
+        edge_index = torch.tensor([[e[0], e[1]] for e in g.edges()], dtype=torch.long).t().contiguous()
+        edge_attr = torch.tensor([e[2]['features'] for e in g.edges(data=True)], dtype=torch.float)
+    else:
+        edge_index = torch.LongTensor([[0], [0]])
+        edge_attr = torch.FloatTensor([[0] * 8])
 
-    # Read Edges
-    for i in range(mol.GetNumAtoms()):
-        for j in range(mol.GetNumAtoms()):
-            e_ij = mol.GetBondBetweenAtoms(i, j)
-            if e_ij is not None:
-                g.add_edge(i, j,
-                            b_type=e_ij.GetBondType(),
-                            # 1 more edge features 2 dim
-                            IsConjugated=e_ij.GetIsConjugated(),
-                            IsAromatic=e_ij.GetIsAromatic()
-                            )
+    return x, edge_index, edge_attr
 
-    node_attr = get_nodes(g)
-    edge_index, edge_attr = get_edges(g)
+def process(dataset_name):
+    if dataset_name in ["davis", "kiba"]:
+        df_train = pd.read_csv(f"./data/{dataset_name}/csvs/{dataset_name}_train_42.csv")
+        df_valid = pd.read_csv(f"./data/{dataset_name}/csvs/{dataset_name}_valid_42.csv")
+        df_test = pd.read_csv(f"./data/{dataset_name}/csvs/{dataset_name}_test_42.csv")
+        df = pd.concat([df_train, df_valid, df_test])
+    elif dataset_name == "full_toxcast":
+        df_train = pd.read_csv("./data/full_toxcast/raw/data_train.csv")
+        df_test = pd.read_csv("./data/full_toxcast/raw/data_test.csv")
+        df = pd.concat([df_train, df_test])
 
-    return node_attr, edge_index, edge_attr
+    smiles_list = df["compound_iso_smiles" if dataset_name != "full_toxcast" else "smiles"].unique()
+    graph_dict = {}
 
+    for smile in tqdm(smiles_list):
+        mol = Chem.MolFromSmiles(smile)
+        if mol:
+            graph = mol2graph(mol)
+            if graph:
+                graph_dict[smile] = DATA.Data(x=graph[0], edge_index=graph[1], edge_attr=graph[2])
+
+    with open(f"./data/{dataset_name}_molecule.pkl", "wb") as f:
+        pickle.dump(graph_dict, f)
+
+# -----------------------------------------------------------------------------
 if __name__ == "__main__":
     setup_seed(100)
     process("davis")
     process("kiba")
-    process("full_toxcast")
-    
-    

@@ -51,7 +51,8 @@ def get_esm2_embeddings(sequence, tokenizer, model, device):
         outputs = model(**inputs)
         token_embeddings = outputs.last_hidden_state
     
-    return token_embeddings.squeeze()[1:-1, :].cpu().detach()
+    return token_embeddings.squeeze()[1:-1, :].cpu().detach(), \
+            token_embeddings.squeeze().cpu().detach()
 
 # # Example usage
 # tokenizer, model, device = load_esm2_model()
