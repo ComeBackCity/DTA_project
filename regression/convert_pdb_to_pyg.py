@@ -68,6 +68,8 @@ def calculate_angle(v1: np.ndarray, v2: np.ndarray) -> float:
     cos_theta = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-8)
     return float(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
 
+
+
 # -----------------------------------------------------------------------------
 # 3) Node Feature Augmentation
 # -----------------------------------------------------------------------------
@@ -86,7 +88,7 @@ def add_graph_centrality_features(g: nx.Graph):
         attr['betweenness'] = btw[n]
         attr['pagerank'] = pr[n]
 
-def add_contact_number(g: nx.Graph, threshold: float = 8.0):
+def add_contact_number(g: nx.Graph, threshold: float = 9.0):
     """Add contact number (neighbors within threshold Å) per node."""
     coords = {n: np.array(d['coords']) for n, d in g.nodes(data=True)}
     for n, attr in g.nodes(data=True):
@@ -123,6 +125,7 @@ def build_edge_features(g: nx.Graph) -> (torch.Tensor, torch.Tensor):
     """
     edge_indices = []
     edge_attrs = []
+    LONG_RANGE_THRESHOLD = 12  # Residues separated by more than 12 positions are considered long-range
 
     node_map = {n: i for i, n in enumerate(g.nodes())}
     coords = {n: np.array(d['coords']) for n, d in g.nodes(data=True)}
@@ -138,6 +141,7 @@ def build_edge_features(g: nx.Graph) -> (torch.Tensor, torch.Tensor):
         idx_u = seq_indices[u]
         idx_v = seq_indices[v]
         seq_sep = abs(idx_v - idx_u)
+        is_long_range = float(seq_sep > LONG_RANGE_THRESHOLD)
 
         kinds = a.get('kind', [])
 
@@ -152,7 +156,8 @@ def build_edge_features(g: nx.Graph) -> (torch.Tensor, torch.Tensor):
             a.get('distance', 0.0),
             calculate_angle(diff, coord_u),
             direction[0], direction[1], direction[2],
-            seq_sep
+            seq_sep,
+            is_long_range  # Add flag for long-range interactions
         ])
 
     edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
@@ -224,7 +229,7 @@ def uniprot_id_to_structure(pdb_path: str, embeddings: np.ndarray) -> Data:
             add_cation_pi_interactions,
             add_ionic_interactions,
             add_disulfide_interactions,
-            partial(add_k_nn_edges, k=20),
+            partial(add_k_nn_edges, k=10, long_interaction_threshold=12),
             add_distance_to_edges,
         ],
         node_metadata_functions=[

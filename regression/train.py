@@ -28,6 +28,7 @@ from transformers import get_cosine_schedule_with_warmup
 from tqdm import tqdm
 from collections import defaultdict
 from dataset_new import *
+from torch.utils.tensorboard import SummaryWriter
 
 
 def setup_seed(seed):
@@ -42,6 +43,8 @@ def setup_seed(seed):
 def val(model, criterion, dataloader, device):
     model.eval()
     running_loss = AverageMeter()
+    all_targets = []
+    all_preds = []
 
     with torch.no_grad():
         for data in tqdm(dataloader, desc="Validation", leave=False):
@@ -50,54 +53,64 @@ def val(model, criterion, dataloader, device):
             pred = model(data)
             loss = criterion(pred.view(-1), y.view(-1))
             running_loss.update(loss.item(), y.size(0))
+            all_targets.append(y.detach().cpu().numpy().reshape(-1))
+            all_preds.append(pred.detach().cpu().numpy().reshape(-1))
 
     epoch_loss = running_loss.get_average()
     running_loss.reset()
 
-    return epoch_loss
+    all_targets = np.concatenate(all_targets)
+    all_preds = np.concatenate(all_preds)
+    epoch_cindex = get_cindex(all_targets, all_preds)
 
-
-def adjust_weight_decay(optimizer, epoch, step_size, gamma):
-    """
-    Adjusts the weight decay parameter in the optimizer's param groups.
-
-    Args:
-        optimizer (torch.optim.Optimizer): The optimizer.
-        epoch (int): Current epoch.
-        step_size (int): Step size for decay.
-        gamma (float): Decay factor.
-    """
-    if epoch % step_size == 0 and epoch > 0:
-        for param_group in optimizer.param_groups:
-            old_wd = param_group['weight_decay']
-            param_group['weight_decay'] *= gamma
-            print(f"Adjusted weight_decay from {old_wd} to {param_group['weight_decay']} at epoch {epoch}")
+    return epoch_loss, epoch_cindex
 
 
 def calculate_learning_rate(batch_size, base_batch_size=512, base_lr=5e-4):
-    """
-    Calculate appropriate learning rate based on batch size.
-    
-    Args:
-        batch_size (int): Current batch size
-        base_batch_size (int): Reference batch size (default: 512)
-        base_lr (float): Learning rate for base batch size (default: 5e-4)
-    
-    Returns:
-        float: Scaled learning rate
-    """
-    # Linear scaling rule
     lr = base_lr * (batch_size / base_batch_size)
-    
-    # Clamp learning rate to reasonable bounds
     return max(min(lr, 1e-2), 1e-5)
+
+
+def get_weight_decay(batch_size):
+    if batch_size < 1024:
+        return 1e-2
+    else:
+        return 2e-2
+
+
+class CosineAnnealingWithWarmupWeightDecay:
+    def __init__(self, optimizer, min_wd, max_wd, num_warmup_steps, num_training_steps, num_cycles=1):
+        self.optimizer = optimizer
+        self.min_wd = min_wd
+        self.max_wd = max_wd
+        self.num_warmup_steps = num_warmup_steps
+        self.num_training_steps = num_training_steps
+        self.num_cycles = num_cycles
+        self.last_step = 0
+
+    def step(self):
+        self.last_step += 1
+        if self.last_step < self.num_warmup_steps:
+            wd = self.min_wd + (self.max_wd - self.min_wd) * (self.last_step / self.num_warmup_steps)
+        else:
+            progress = (self.last_step - self.num_warmup_steps) / max(1, self.num_training_steps - self.num_warmup_steps)
+            cosine_decay = 0.5 * (1 + math.cos(math.pi * ((self.num_cycles * progress) % 1)))
+            wd = self.min_wd + (self.max_wd - self.min_wd) * cosine_decay
+        for param_group in self.optimizer.param_groups:
+            param_group['weight_decay'] = wd
+        return wd
+
+    def state_dict(self):
+        return {'last_step': self.last_step}
+
+    def load_state_dict(self, state):
+        self.last_step = state.get('last_step', 0)
 
 
 def main():
     parser = argparse.ArgumentParser(description='Train MGraphDTA Model with Checkpointing and Schedulers')
     setup_seed(100)
 
-    # Add arguments
     parser.add_argument('--dataset', required=True, help='Dataset name (e.g., davis or kiba)')
     parser.add_argument('--save_model', action='store_true', help='Whether to save the model')
     parser.add_argument('--lr', type=float, default=None, help='Learning rate (if None, will be calculated based on batch size)')
@@ -106,14 +119,15 @@ def main():
     parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint to resume training')
     parser.add_argument('--save_interval', type=int, default=50, help='How many epochs to wait before saving a checkpoint')
     parser.add_argument('--early_stop_epoch', type=int, default=400, help='Number of epochs with no improvement after which training will be stopped')
-    parser.add_argument('--wd_step_size', type=int, default=100, help='Step size for weight decay scheduler')
-    parser.add_argument('--wd_gamma', type=float, default=0.1, help='Gamma for weight decay scheduler')
+    parser.add_argument('--weight_decay', type=float, default=None, help='Weight decay (if None, will be set based on batch size)')
     args = parser.parse_args()
 
-    # Calculate learning rate based on batch size if not specified
     if args.lr is None:
         args.lr = calculate_learning_rate(args.batch_size)
         print(f"Using automatically calculated learning rate: {args.lr:.2e} for batch size {args.batch_size}")
+    if args.weight_decay is None:
+        args.weight_decay = get_weight_decay(args.batch_size)
+        print(f"Using weight decay: {args.weight_decay:.1e} for batch size {args.batch_size}")
 
     params = dict(
         data_root="data",
@@ -132,24 +146,20 @@ def main():
     data_root = params.get("data_root")
     fpath = os.path.join(data_root, DATASET)
     
-    # Initialize datasets
     train_set = GNNDataset(DATASET, split='train')
     val_set = GNNDataset(DATASET, split='valid')
     
     labels = train_set.get_labels()
     
-    # Initialize custom sampler
-    # sampler = BalancedRegressionBatchSampler2(labels, params.get('batch_size'), minority_ratio=0.6, shuffle=True)
+    # sampler = BalancedRegressionBatchSampler2(labels, params.get('batch_size'), minority_ratio=.6, shuffle=True)
     sampler = AdaptiveBalancedSampler(labels, params.get('batch_size'), n_clusters=5, shuffle=True, adaptive_ratio=True)
-    # Initialize DataLoaders
-    # Ensure that 'collate' is defined or imported appropriately
     train_loader = DataLoader(
         train_set, 
         batch_sampler=sampler, 
         num_workers=8, 
         collate_fn=collate  
     )
-    
+
     val_loader = DataLoader(
         val_set, 
         batch_size=params.get('batch_size'), 
@@ -158,125 +168,146 @@ def main():
         collate_fn=collate  
     )
 
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    # Initialize model
     model = MGraphDTA(
-        prot_feat_dim=1332, 
+        prot_feat_dim=1204, 
         drug_feat_dim=34, 
-        prot_edge_dim=12,
+        prot_edge_dim=13,
         drug_edge_dim=8,
-        filt=32, 
-        out_f=1
+        hid_dim=512,
+        prot_layers=4,
+        drug_layers=2, 
+        out_f=1,
+        pe_dim=10
     ).to(device)
 
-    # Define optimizer
-    optimizer = optim.Adam(model.parameters(), lr=params.get('lr'), weight_decay=0.01)
+    optimizer = optim.Adam(model.parameters(), lr=params.get('lr'), weight_decay=args.weight_decay)
 
-    # Define learning rate scheduler
-    lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+    num_training_steps = len(train_loader) * args.epochs
+    num_warmup_steps = num_training_steps // 10
+    lr_scheduler = get_cosine_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=num_warmup_steps,
+        num_training_steps=num_training_steps,
+        num_cycles=args.epochs // 50
+    )
 
-    # Define weight decay scheduler
-    # This is a custom scheduler; adjust weight decay every 'wd_step_size' epochs by multiplying with 'wd_gamma'
-    # Implemented via the adjust_weight_decay function below
+    min_wd = 1e-5
+    max_wd = 2e-2
+    wd_scheduler = CosineAnnealingWithWarmupWeightDecay(
+        optimizer,
+        min_wd=min_wd,
+        max_wd=max_wd,
+        num_warmup_steps=num_warmup_steps,
+        num_training_steps=num_training_steps,
+        num_cycles=args.epochs // 50
+    )
 
-    # Define criterion
     criterion = nn.MSELoss()
 
-    # Early stopping parameters
     early_stop_epoch = args.early_stop_epoch
 
-    # Initialize meters
     running_loss = AverageMeter()
     running_cindex = AverageMeter()
     running_best_mse = BestMeter("min")
 
-    # Initialize training state
     start_epoch = 0
     best_val_loss = float('inf')
     break_flag = False
 
-    # Load checkpoint if resume is specified
     if args.resume:
         checkpoint = load_checkpoint(model, optimizer, lr_scheduler, args.resume)
         if checkpoint:
             start_epoch = checkpoint['epoch'] + 1
             best_val_loss = checkpoint['best_val_loss']
+            
+            if checkpoint.get('criterion_state') is not None:
+                criterion.load_state_dict(checkpoint['criterion_state'])
+            
+            wd_params = checkpoint.get('weight_decay_params')
+            if wd_params is not None:
+                args.weight_decay = wd_params.get('weight_decay', args.weight_decay)
+            
+            if checkpoint.get('wd_scheduler_state') is not None:
+                wd_scheduler.load_state_dict(checkpoint['wd_scheduler_state'])
+            
             logger.info(f"Resumed training from epoch {start_epoch} with best_val_loss {best_val_loss:.4f}")
         else:
             logger.info("Starting training from scratch.")
     else:
         logger.info("Starting training from scratch.")
 
-    model.train()
+    writer = SummaryWriter(log_dir=os.path.join(logger.get_log_dir(), "tensorboard"))
 
     for epoch in range(start_epoch, args.epochs):
         if break_flag:
             break
 
         logger.info(f"Epoch {epoch + 1}/{args.epochs}")
+        
         model.train()
-        for data in tqdm(train_loader, desc=f"Training Epoch {epoch + 1}", leave=False):
+        running_loss.reset()
+        running_cindex.reset()
+                
+        for data in tqdm(train_loader, desc=f"Training Epoch {epoch + 1}", leave=False):         
             data = [data_elem.to(device) for data_elem in data]
             optimizer.zero_grad()
             pred = model(data)
             
             y = data[2]
-            # print(y)
-            
             loss = criterion(pred.view(-1), y.view(-1))         
             cindex = get_cindex(
                 y.detach().cpu().numpy().reshape(-1), 
                 pred.detach().cpu().numpy().reshape(-1)
             )
-
+            
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
             optimizer.step()
             lr_scheduler.step()
-
-            # Adjust weight decay if using scheduler
-            adjust_weight_decay(optimizer, epoch, args.wd_step_size, args.wd_gamma)
+            wd_scheduler.step()
 
             running_loss.update(loss.item(), y.size(0)) 
             running_cindex.update(cindex, y.size(0))
 
         epoch_loss = running_loss.get_average()
         epoch_cindex = running_cindex.get_average()
-        running_loss.reset()
-        running_cindex.reset()
 
-        # Validation
-        val_loss = val(model, criterion, val_loader, device)
+        val_loss, val_cindex = val(model, criterion, val_loader, device)
 
         msg = f"Epoch-{epoch + 1}, Loss-{epoch_loss:.4f}, CIndex-{epoch_cindex:.4f}, Val_Loss-{val_loss:.4f}"
         logger.info(msg)
 
-        # Check if this is the best validation loss
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             running_best_mse.update(val_loss)
             if save_model_flag:
-                # Save the best model
                 save_model_dict(model, logger.get_model_dir(), msg)
                 logger.info(f"Saved Best Model at Epoch {epoch + 1} with Val Loss {val_loss:.4f}")
 
-                # Additionally, save a comprehensive checkpoint for best model
                 checkpoint_path = os.path.join(logger.get_model_dir(), f"best_checkpoint_epoch_{epoch + 1}.pth")
                 save_checkpoint({
                     'epoch': epoch,
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'scheduler_state_dict': lr_scheduler.state_dict(),
-                    'best_val_loss': best_val_loss
+                    'best_val_loss': best_val_loss,
+                    'criterion_state': criterion.state_dict() if hasattr(criterion, 'state_dict') else None,
+                    'weight_decay_params': {
+                        'weight_decay': args.weight_decay,
+                        'current_epoch': epoch
+                    },
+                    'wd_scheduler_state': wd_scheduler.state_dict()
                 }, filename=checkpoint_path)
                 logger.info(f"Saved Best Checkpoint at {checkpoint_path}")
+
         else:
             running_best_mse.update(val_loss)
             if running_best_mse.counter() > early_stop_epoch:
                 logger.info(f"Early stopping triggered at epoch {epoch + 1}")
                 break
 
-        # Always save the latest model
         if save_model_flag:
             latest_checkpoint_path = os.path.join(logger.get_model_dir(), "latest_checkpoint.pth")
             save_checkpoint({
@@ -284,12 +315,29 @@ def main():
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': lr_scheduler.state_dict(),
-                'best_val_loss': best_val_loss
+                'best_val_loss': best_val_loss,
+                'criterion_state': criterion.state_dict() if hasattr(criterion, 'state_dict') else None,
+                'weight_decay_params': {
+                    'weight_decay': args.weight_decay,
+                    'current_epoch': epoch
+                },
+                'wd_scheduler_state': wd_scheduler.state_dict()
             }, filename=latest_checkpoint_path)
             logger.info(f"Saved Latest Checkpoint at {latest_checkpoint_path}")
 
+        writer.add_scalar("Train/Loss", epoch_loss, epoch)
+        writer.add_scalar("Train/CIndex", epoch_cindex, epoch)
+        writer.add_scalar("Val/Loss", val_loss, epoch)
+        writer.add_scalar("Val/CIndex", val_cindex, epoch)
+        writer.add_scalar("LR", optimizer.param_groups[0]['lr'], epoch)
+        writer.add_scalar("WeightDecay", optimizer.param_groups[0]['weight_decay'], epoch)
+
     logger.info("Training Completed.")
+    writer.close()
 
 
 if __name__ == "__main__":
     main()
+    
+
+# %%

@@ -22,6 +22,7 @@ import pickle
 import gc
 import random
 from esm2_feature import load_esm2_model, get_esm2_embeddings
+from esmc_feature import load_model, get_embeddings
 fdef_name = osp.join(RDConfig.RDDataDir, 'BaseFeatures.fdef')
 chem_feature_factory = ChemicalFeatures.BuildFeatureFactory(fdef_name)
 
@@ -52,8 +53,16 @@ def remove_X_from_sequence(sequence):
     cleaned_sequence = sequence.replace('X', '')
     return cleaned_sequence
 
-def process_data(dataset):
-    tokenizer, model, device = load_esm2_model()
+def process_data(dataset, model_type="esm2"):
+    """
+    Process protein sequences and save them as graphs with embeddings.
+    
+    Args:
+    - dataset (str): Name of the dataset
+    - model_type (str): Either "esm2" or "esmc" to specify which model to use
+    """
+    # Load the appropriate model
+    model_components = load_model(model_type)
 
     with open(f"data/{dataset}_mapping.pkl", "rb") as f:
         mapping = pickle.load(f)
@@ -71,9 +80,7 @@ def process_data(dataset):
     if not os.path.exists(embeddings_dir):
         os.makedirs(embeddings_dir)
     
-
     for sequence, header in mapping.items():
-        
         directory = f"./data/alphafold2/{dataset}/{header}/"
         files = os.listdir(directory) 
         save_path1 = os.path.join(save_dir1, f"{header}.pkl")
@@ -91,15 +98,13 @@ def process_data(dataset):
             
         print("Extracting embeddings...")
         if header == "sequence_348":
-            embeddings, emb_full = get_esm2_embeddings(remove_X_from_sequence(sequence), tokenizer, model, device)
+            embeddings, emb_full = get_embeddings(remove_X_from_sequence(sequence), model_components, model_type)
         else:
-            embeddings, emb_full = get_esm2_embeddings(remove_X_from_sequence(sequence), tokenizer, model, device)
+            embeddings, emb_full = get_embeddings(remove_X_from_sequence(sequence), model_components, model_type)
         print("Done extracting embeddings...")
 
-        # print an indciator for debugging 
         print(f"Processing {header}...")
-        protein_graph = \
-            uniprot_id_to_structure(pdb_path=file_name, embeddings = embeddings)
+        protein_graph = uniprot_id_to_structure(pdb_path=file_name, embeddings=embeddings)
         print(f"Processed {header}...")
     
         with open(save_path1, "wb") as f:
@@ -111,13 +116,13 @@ def process_data(dataset):
         with open(emb_save_path, "wb") as f:
             pickle.dump(emb_full, f)
     
-        gc.collect()            
+        gc.collect()
 
 
 if __name__ == "__main__":
     setup_seed(100)
-    process_data("davis")
-    process_data("kiba")
+    process_data("davis", "esmc")
+    process_data("kiba", "esmc")
     # process_data("full_toxcast")
     
     

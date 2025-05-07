@@ -13,7 +13,7 @@ def calculate_mean_std_per_key(data_dir):
     """
     # Keys that we should NOT normalize
     keys_to_skip = {
-        'one_hot_residues', 'relative_position', 'clustering', 'edge_index', 'pos'
+        'one_hot_residues', 'relative_position', 'clustering', 'edge_index', 'pos', 'esm_embeddings'
     }
 
     all_tensors = collections.defaultdict(list)

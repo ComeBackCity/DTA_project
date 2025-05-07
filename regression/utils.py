@@ -100,10 +100,23 @@ def load_checkpoint(model, optimizer, scheduler, filename='checkpoint.pth'):
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         if scheduler and 'scheduler_state_dict' in checkpoint:
             scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+        # Load criterion state if available
+        criterion_state = checkpoint.get('criterion_state')
+        
+        # Load weight decay parameters if available
+        weight_decay_params = checkpoint.get('weight_decay_params')
+        
         epoch = checkpoint['epoch']
         best_val_loss = checkpoint.get('best_val_loss', float('inf'))
         print(f"=> Loaded checkpoint '{filename}' (epoch {epoch}) with best_val_loss {best_val_loss:.4f}")
-        return {'epoch': epoch, 'best_val_loss': best_val_loss}
+        
+        return {
+            'epoch': epoch, 
+            'best_val_loss': best_val_loss,
+            'criterion_state': criterion_state,
+            'weight_decay_params': weight_decay_params
+        }
     else:
         print(f"=> No checkpoint found at '{filename}'")
         return None
