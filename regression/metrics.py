@@ -11,23 +11,66 @@ from sklearn.metrics import roc_auc_score, cohen_kappa_score
 #     return CI
 
 def get_cindex(Y, P):
+    """
+    Computes the Concordance Index (CI) for predictions.
+
+    Args:
+        Y (np.ndarray): Ground truth values (1D)
+        P (np.ndarray): Predicted values (1D)
+
+    Returns:
+        float: Concordance Index
+    """
+    Y = np.asarray(Y).flatten()
+    P = np.asarray(P).flatten()
+    
+    # Pairwise difference matrices
+    diff_Y = Y[:, None] - Y[None, :]
+    diff_P = P[:, None] - P[None, :]
+
+    # Valid pairs: Y[i] > Y[j]
+    valid = diff_Y > 0
+
+    # Concordant: P[i] > P[j]
+    concordant = (diff_P > 0)[valid]
+
+    # Ties: P[i] == P[j]
+    ties = (diff_P == 0)[valid]
+
+    concordant_score = np.sum(concordant) + 0.5 * np.sum(ties)
+    total_pairs = np.sum(valid)
+
+    return concordant_score / total_pairs if total_pairs > 0 else 0.0
+
+
+def get_cindex2(Y, P):
+    """
+    Vectorized concordance index (C-index) computation.
+
+    Args:
+        Y (array-like): Ground truth labels. Shape: (N,)
+        P (array-like): Predicted values. Shape: (N,)
+
+    Returns:
+        float: C-index score.
+    """
     Y = np.asarray(Y)
     P = np.asarray(P)
 
-    # Create a grid of indices
-    idx = np.arange(len(Y))
-    idx1, idx2 = np.meshgrid(idx, idx)
+    # Create pairwise differences
+    diff_Y = Y[:, None] - Y[None, :]
+    diff_P = P[:, None] - P[None, :]
 
-    # Compare true values (Y) and predicted values (P) for all pairs
-    valid_pairs = Y[idx1] > Y[idx2]
-    concordant = (P[idx1] > P[idx2])
-    ties = (P[idx1] == P[idx2])
+    # Only consider pairs where Y[i] > Y[j] (strictly)
+    valid_mask = diff_Y > 0
 
-    # Summing concordant pairs and counting valid pairs
-    summ = np.sum(concordant[valid_pairs]) + 0.5 * np.sum(ties[valid_pairs])
-    pair = np.sum(valid_pairs)
+    # Concordant: P[i] > P[j]
+    concordant = (diff_P > 0) & valid_mask
+    ties = (diff_P == 0) & valid_mask
 
-    # Calculate C-index
+    summ = np.sum(concordant) + 0.5 * np.sum(ties)
+    pair = np.sum(valid_mask)
+
     return summ / pair if pair != 0 else 0.0
 
 def ci(y, f):

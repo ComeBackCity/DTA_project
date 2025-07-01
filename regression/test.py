@@ -6,13 +6,12 @@ import torch
 import torch.nn as nn
 from torch_geometric.loader import DataLoader
 import argparse
+from tqdm import tqdm
 
 from metrics import get_cindex, get_rm2
-from dataset import *
-# from model import MGraphDTA
-from model import MGraphDTA
-from utils import *
 from dataset_new import *
+from my_model import SimpleGATCrossModel
+from utils import *
 
 def val(model, criterion, dataloader, device):
     model.eval()
@@ -21,13 +20,12 @@ def val(model, criterion, dataloader, device):
     pred_list = []
     label_list = []
 
-    for data in dataloader:
+    for data in tqdm(dataloader, desc="Testing", leave=False):
         data = [data_elem.to(device) for data_elem in data]
 
         with torch.no_grad():
             pred = model(data)
             label = data[2]
-            print(pred.view(-1), label.view(-1))
             loss = criterion(pred.view(-1), label.view(-1))
             pred_list.append(pred.view(-1).detach().cpu().numpy())
             label_list.append(label.detach().cpu().numpy())
@@ -55,23 +53,49 @@ def main():
     DATASET = args.dataset
     model_path = args.model_path
 
-    fpath = os.path.join(data_root, DATASET)
-
-    # test_set = GNNDataset(fpath, train=False)
+    # Load test dataset
     test_set = GNNDataset(DATASET, split='test')
-    print("Number of test: ", len(test_set))
-    test_loader = DataLoader(test_set, batch_size=256, shuffle=False, num_workers=8)
+    print("Number of test samples: ", len(test_set))
+    test_loader = DataLoader(
+        test_set, 
+        batch_size=32, 
+        shuffle=False, 
+        num_workers=8,
+        collate_fn=collate
+    )
 
     device = torch.device('cuda:0')
-    model = MGraphDTA(protein_feat_dim=1314, drug_feat_dim=27, 
-                      protein_edge_dim=6, drug_edge_dim=6, filter_num=32, out_dim=1).to(device)
+    
+    # Initialize model with same configuration as training
+    # model = SimpleGATCrossModel(
+    #     prot_feat_dim=1204, 
+    #     drug_feat_dim=34, 
+    #     prot_edge_dim=13,
+    #     drug_edge_dim=8,
+    #     hidden_dim=256,
+    #     prot_layers=4,
+    #     drug_layers=2, 
+    #     out_dim=1,
+    # ).to(device)
+    
+    model = SimpleGATCrossModel(
+        prot_feat_dim=1204, 
+        drug_feat_dim=34, 
+        prot_edge_dim=13,
+        drug_edge_dim=8,
+        hidden_dim=256,
+        prot_layers=6,
+        drug_layers=3, 
+        out_dim=1,
+    ).to(device)
 
     criterion = nn.MSELoss()
     load_model_dict(model, model_path)
+    
+    # Run evaluation
     test_loss, test_cindex, test_r2 = val(model, criterion, test_loader, device)
     msg = "test_loss:%.4f, test_cindex:%.4f, test_r2:%.4f" % (test_loss, test_cindex, test_r2)
     print(msg)
-
 
 if __name__ == "__main__":
     main()

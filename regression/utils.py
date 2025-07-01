@@ -98,8 +98,8 @@ def load_checkpoint(model, optimizer, scheduler, filename='checkpoint.pth'):
         checkpoint = torch.load(filename, map_location='cpu')
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        if scheduler and 'scheduler_state_dict' in checkpoint:
-            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        # if scheduler and 'scheduler_state_dict' in checkpoint:
+        #     scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         
         # Load criterion state if available
         criterion_state = checkpoint.get('criterion_state')
@@ -145,7 +145,7 @@ def load_model_dict(model, ckpt):
         model (torch.nn.Module): The model to load state into.
         ckpt (str): Path to the checkpoint file.
     """
-    model.load_state_dict(torch.load(ckpt))
+    model.load_state_dict(torch.load(ckpt)['model_state_dict'])
     print(f"Model has been loaded from {ckpt}.")
 
 

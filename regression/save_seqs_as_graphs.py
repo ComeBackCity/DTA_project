@@ -67,62 +67,66 @@ def process_data(dataset, model_type="esm2"):
     with open(f"data/{dataset}_mapping.pkl", "rb") as f:
         mapping = pickle.load(f)
         
-    save_dir1 = f"./data/{dataset}/protein_graphs/with_embeddings"
-    save_dir2 = f"./data/{dataset}/protein_graphs/wo_embeddings"
-    embeddings_dir = f"./data/{dataset}/embeddings/"
+    save_dir = f"./data/{dataset}/protein_graphs_with_all_embeddings"
     
-    if not os.path.exists(save_dir1):
-        os.makedirs(save_dir1)
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
         
-    if not os.path.exists(save_dir2):
-        os.makedirs(save_dir2)
-        
-    if not os.path.exists(embeddings_dir):
-        os.makedirs(embeddings_dir)
-    
-    for sequence, header in mapping.items():
+    print(f"Processing {dataset} protein sequences and saving graphs with embeddings to {save_dir}")
+
+    for sequence, header in tqdm(mapping.items()):
         directory = f"./data/alphafold2/{dataset}/{header}/"
-        files = os.listdir(directory) 
-        save_path1 = os.path.join(save_dir1, f"{header}.pkl")
-        save_path2 = os.path.join(save_dir2, f"{header}.pkl")
-        emb_save_path = os.path.join(embeddings_dir, f"{header}.pkl")
         
-        # if os.path.exists(save_path1):
+        if not os.path.exists(directory):
+            print(f"Warning: Directory not found for {header}: {directory}. Skipping.")
+            continue
+            
+        files = os.listdir(directory) 
+        save_path = os.path.join(save_dir, f"{header}.pkl")
+        
+        # if os.path.exists(save_path):
         #     continue
         
         file_pattern = get_pattern(dataset, header)
+        file_name = None
         for f in files:
             if file_pattern.match(f):
                 file_name = os.path.join(directory, f)
                 break  
+                
+        if file_name is None:
+            print(f"Warning: PDB file not found for {header} with pattern {file_pattern.pattern}. Skipping.")
+            continue
             
-        print("Extracting embeddings...")
-        if header == "sequence_348":
-            embeddings, emb_full = get_embeddings(remove_X_from_sequence(sequence), model_components, model_type)
-        else:
-            embeddings, emb_full = get_embeddings(remove_X_from_sequence(sequence), model_components, model_type)
-        print("Done extracting embeddings...")
+        print(f"Extracting embeddings for {header}...")
+        # get_embeddings now returns residue_embeddings and cls_embedding
+        residue_embeddings, cls_embedding = get_embeddings(remove_X_from_sequence(sequence), model_components, model_type)
+        print(f"Done extracting embeddings for {header}.")
 
-        print(f"Processing {header}...")
-        protein_graph = uniprot_id_to_structure(pdb_path=file_name, embeddings=embeddings)
-        print(f"Processed {header}...")
-    
-        with open(save_path1, "wb") as f:
-            pickle.dump(protein_graph, f)
+
+        print(f"Processing PDB for {header}...")
+        # Pass residue_embeddings and cls_embedding separately
+        protein_graph = uniprot_id_to_structure(pdb_path=file_name, residue_embeddings=residue_embeddings.numpy(), cls_embedding=cls_embedding.numpy() if cls_embedding is not None else None) # convert to numpy
+        print(f"Processed PDB for {header}.")
+        
+        if protein_graph is not None:
+            with open(save_path, "wb") as f:
+                pickle.dump(protein_graph, f)
             
-        with open(save_path2, "wb") as f:
-            pickle.dump(protein_graph, f)
+            print(f"Saved graph for {header} to {save_path}")
+        else:
+            print(f"Warning: Could not generate protein graph for {header}. Skipping save.")
             
-        with open(emb_save_path, "wb") as f:
-            pickle.dump(emb_full, f)
-    
         gc.collect()
 
 
 if __name__ == "__main__":
     setup_seed(100)
+    # process_data("davis", "esm2") # Example for ESM2
+    # process_data("kiba", "esm2") # Example for ESM2
     process_data("davis", "esmc")
     process_data("kiba", "esmc")
-    # process_data("full_toxcast")
+    # process_data("full_toxcast", "esm2")
+    # process_data("full_toxcast", "esmc")
     
     

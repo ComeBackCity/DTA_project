@@ -11,6 +11,37 @@ import networkx as nx
 from rdkit import Chem
 from rdkit.Chem import ChemicalFeatures, AllChem
 from rdkit import RDConfig
+from transformers import AutoTokenizer, AutoModel
+
+from transformers import AutoTokenizer, AutoModel
+
+model_name = "ChemFM/ChemFM-1B"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+tokenizer.pad_token = tokenizer.eos_token  # Set padding token
+model = AutoModel.from_pretrained(model_name).eval().to("cuda" if torch.cuda.is_available() else "cpu")
+
+
+
+@torch.no_grad()
+def extract_chemfm_features(smiles: str):
+    # Removed debug prints and exit
+    inputs = tokenizer(smiles, return_tensors="pt", padding=True, truncation=True)
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
+    outputs = model(**inputs)
+
+    # CLS token (first token) embedding
+    # [batch_size, 1, hidden_dim] -> [hidden_dim]
+    cls_embedding = outputs.last_hidden_state[:, 0, :].cpu()
+
+    # Token-level embeddings (excluding CLS and potentially SEP)
+    # Assuming BERT-like structure with CLS at start and SEP at end
+    # [batch_size, seq_len, hidden_dim] -> [seq_len - 2, hidden_dim] for tokens between CLS and SEP
+    # If no SEP, [batch_size, seq_len, hidden_dim] -> [seq_len - 1, hidden_dim] for tokens after CLS
+    # Let's return all tokens except CLS for now and let the model handle potential SEP.
+    token_embeddings = outputs.last_hidden_state[:, 1:, :].squeeze(0).cpu()
+
+    return token_embeddings, cls_embedding
+
 
 # -----------------------------------------------------------------------------
 # Chemical feature factory
@@ -46,18 +77,17 @@ atomic_properties = {
     'I': {'atomic_mass': 126.904, 'a_num': 53}
 }
 
-# Protection: check at start
 assert isinstance(atomic_properties, dict), "atomic_properties must be a dictionary!"
 
 # -----------------------------------------------------------------------------
 # Helper Functions
 # -----------------------------------------------------------------------------
 def setup_seed(seed=42):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
+    random.seed(seed)                          
+    np.random.seed(seed)                       
+    torch.manual_seed(seed)                    
+    torch.cuda.manual_seed_all(seed)           
+    torch.backends.cudnn.deterministic = True  
 
 def compute_gasteiger(mol):
     try:
@@ -65,8 +95,7 @@ def compute_gasteiger(mol):
     except:
         pass
 
-def float_flag(x):
-    return 1.0 if x else 0.0
+def float_flag(x): return 1.0 if x else 0.0
 
 def distance(xyz1, xyz2):
     return np.linalg.norm(np.array(xyz1) - np.array(xyz2))
@@ -96,17 +125,14 @@ def get_atom_features(atom, mol, coords, centroid):
     sym = atom.GetSymbol()
     idx = atom.GetIdx()
     props = atomic_properties.get(sym, {'atomic_mass': 0.0, 'a_num': 0})
-
-    features = []
-    features += [float_flag(sym == x) for x in atomic_properties.keys()]
-    features.append(float_flag(atom.GetIsAromatic()))
-    features.append(float_flag(atom.IsInRing()))
-    features.append(float_flag(atom.GetHybridization() == Chem.rdchem.HybridizationType.SP))
-    features.append(float_flag(atom.GetHybridization() == Chem.rdchem.HybridizationType.SP2))
-    features.append(float_flag(atom.GetHybridization() == Chem.rdchem.HybridizationType.SP3))
-    features.append(float_flag(atom.HasProp('_CIPCode')))
-
-    continuous = [
+    features = [float_flag(sym == x) for x in atomic_properties.keys()]
+    features.extend([
+        float_flag(atom.GetIsAromatic()),
+        float_flag(atom.IsInRing()),
+        float_flag(atom.GetHybridization() == Chem.rdchem.HybridizationType.SP),
+        float_flag(atom.GetHybridization() == Chem.rdchem.HybridizationType.SP2),
+        float_flag(atom.GetHybridization() == Chem.rdchem.HybridizationType.SP3),
+        float_flag(atom.HasProp('_CIPCode')),
         float(atom.GetTotalNumHs()),
         float(atom.GetDegree()),
         float(atom.GetExplicitValence()),
@@ -118,35 +144,24 @@ def get_atom_features(atom, mol, coords, centroid):
         float(electronegativity.get(sym, 0.0)),
         float(vdw_radius.get(sym, 0.0)),
         float(atom.GetProp('_GasteigerCharge')) if atom.HasProp('_GasteigerCharge') else 0.0,
-        float(mol.GetRingInfo().NumAtomRings(idx))
-    ]
-    features += continuous
-
-    # 3D Derived Features (NO xyz included)
-    dist_to_centroid = distance(coords[idx], centroid)
-    local_density = sum(distance(coords[idx], coords[j]) < 3.0 for j in range(len(coords)) if j != idx)
-    features.append(dist_to_centroid)
-    features.append(local_density)
-
-    features += [0.0, 0.0]  # Donor/Acceptor placeholders
-
+        float(mol.GetRingInfo().NumAtomRings(idx)),
+        distance(coords[idx], centroid),
+        sum(distance(coords[idx], coords[j]) < 3.0 for j in range(len(coords)) if j != idx),
+        0.0, 0.0  # Donor, Acceptor placeholders
+    ])
     return features
 
 def get_bond_features(bond, coords):
     u, v = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
     bond_length = distance(coords[u], coords[v])
-
     bond_angle = 0.0
     torsion_angle = 0.0
-
     u_neighbors = [n.GetIdx() for n in bond.GetBeginAtom().GetNeighbors() if n.GetIdx() != v]
     v_neighbors = [n.GetIdx() for n in bond.GetEndAtom().GetNeighbors() if n.GetIdx() != u]
-
     if u_neighbors:
         bond_angle = angle(coords[u_neighbors[0]], coords[u], coords[v])
     if len(u_neighbors) > 0 and len(v_neighbors) > 0:
         torsion_angle = torsion(coords[u_neighbors[0]], coords[u], coords[v], coords[v_neighbors[0]])
-
     return [
         float(bond.GetBondTypeAsDouble()),
         float_flag(bond.GetIsConjugated()),
@@ -161,25 +176,17 @@ def get_bond_features(bond, coords):
 def mol2graph(mol):
     if mol is None:
         return None
-
     mol = Chem.AddHs(mol)
     try:
         AllChem.EmbedMolecule(mol, randomSeed=42)
-    except:
-        return None  # skip molecules where 3D fails
-
-    try:
         coords = mol.GetConformer().GetPositions()
     except:
         return None
-
     centroid = np.mean(coords, axis=0)
     compute_gasteiger(mol)
     g = nx.Graph()
-
     for i, atom in enumerate(mol.GetAtoms()):
         g.add_node(i, features=get_atom_features(atom, mol, coords, centroid))
-
     feats = chem_feature_factory.GetFeaturesForMol(mol)
     for f in feats:
         family = f.GetFamily()
@@ -188,11 +195,9 @@ def mol2graph(mol):
                 g.nodes[atom_id]['features'][-2] = 1.0
             elif family == 'Acceptor':
                 g.nodes[atom_id]['features'][-1] = 1.0
-
     for bond in mol.GetBonds():
         u, v = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
         g.add_edge(u, v, features=get_bond_features(bond, coords))
-
     x = torch.tensor([g.nodes[i]['features'] for i in g.nodes()], dtype=torch.float)
     if g.edges():
         edge_index = torch.tensor([[e[0], e[1]] for e in g.edges()], dtype=torch.long).t().contiguous()
@@ -200,31 +205,56 @@ def mol2graph(mol):
     else:
         edge_index = torch.LongTensor([[0], [0]])
         edge_attr = torch.FloatTensor([[0] * 8])
+    return DATA.Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
 
-    return x, edge_index, edge_attr
-
+# -----------------------------------------------------------------------------
+# Process Entry Point
+# -----------------------------------------------------------------------------
 def process(dataset_name):
     if dataset_name in ["davis", "kiba"]:
         df_train = pd.read_csv(f"./data/{dataset_name}/csvs/{dataset_name}_train_42.csv")
         df_valid = pd.read_csv(f"./data/{dataset_name}/csvs/{dataset_name}_valid_42.csv")
         df_test = pd.read_csv(f"./data/{dataset_name}/csvs/{dataset_name}_test_42.csv")
         df = pd.concat([df_train, df_valid, df_test])
+        smiles_list = df["compound_iso_smiles"].unique()
     elif dataset_name == "full_toxcast":
         df_train = pd.read_csv("./data/full_toxcast/raw/data_train.csv")
         df_test = pd.read_csv("./data/full_toxcast/raw/data_test.csv")
         df = pd.concat([df_train, df_test])
+        smiles_list = df["smiles"].unique()
+    else:
+        raise ValueError("Unsupported dataset")
 
-    smiles_list = df["compound_iso_smiles" if dataset_name != "full_toxcast" else "smiles"].unique()
+    # We will store Data objects in a dictionary mapping SMILES to Data objects
     graph_dict = {}
-
+    
+    print(f"Processing {dataset_name} molecules...")
     for smile in tqdm(smiles_list):
         mol = Chem.MolFromSmiles(smile)
         if mol:
-            graph = mol2graph(mol)
-            if graph:
-                graph_dict[smile] = DATA.Data(x=graph[0], edge_index=graph[1], edge_attr=graph[2])
+            graph_data = mol2graph(mol)
+            print(graph_data)
+            exit()
+            if graph_data is not None:
+                try:
+                    # Get ChemFM embeddings (token and CLS)
+                    token_embeddings, cls_embedding = extract_chemfm_features(smile)
+                    
+                    # Add embeddings as separate attributes to the Data object
+                    graph_data.token_embeddings = token_embeddings
+                    graph_data.cls_embedding = cls_embedding
+                    
+                    # Store the data object in the dictionary with SMILES as key
+                    graph_dict[smile] = graph_data
+                    
+                except Exception as e:
+                    print(f"Error processing SMILES {smile}: {e}")
+                    continue # Skip this molecule if embedding fails
 
-    with open(f"./data/{dataset_name}_molecule.pkl", "wb") as f:
+    # Save the dictionary of Data objects
+    output_path = f"./data/{dataset_name}_molecule_graph_and_chemfm.pkl"
+    print(f"Saving processed molecules, graphs, and features to {output_path}")
+    with open(output_path, "wb") as f:
         pickle.dump(graph_dict, f)
 
 # -----------------------------------------------------------------------------
@@ -232,3 +262,4 @@ if __name__ == "__main__":
     setup_seed(100)
     process("davis")
     process("kiba")
+    # process("full_toxcast") # Uncomment if needed

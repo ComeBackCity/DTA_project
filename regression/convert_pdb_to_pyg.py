@@ -34,15 +34,12 @@ from graphein.protein.features.nodes.amino_acid import amino_acid_one_hot, meile
 from graphein.protein.graphs import construct_graph
 from graphein.protein.features.nodes.geometry import add_beta_carbon_vector, add_sequence_neighbour_vector
 
-# -----------------------------------------------------------------------------
-# 1) Load residue physicochemical properties + build amino acid vocabulary
-# -----------------------------------------------------------------------------
+# Load residue properties and build vocab
 with open('./data/residue_features.json', 'r') as f:
     residue_features = json.load(f)
 
 STANDARD_RES = list(residue_features.keys())
 
-# Precompute 20x20 BLOSUM62 matrix aligned to STANDARD_RES
 BLOSUM62 = np.zeros((20, 20), dtype=float)
 for i, aa1 in enumerate(STANDARD_RES):
     for j, aa2 in enumerate(STANDARD_RES):
@@ -53,31 +50,17 @@ for i, aa1 in enumerate(STANDARD_RES):
         else:
             BLOSUM62[i, j] = 0.0
 
-# -----------------------------------------------------------------------------
-# 2) Helper Functions
-# -----------------------------------------------------------------------------
 def one_hot_encode_residue(resname: str) -> np.ndarray:
-    """One-hot encode a 3-letter amino acid."""
     vec = np.zeros(len(STANDARD_RES), dtype=float)
     if resname in STANDARD_RES:
         vec[STANDARD_RES.index(resname)] = 1.0
     return vec
 
 def calculate_angle(v1: np.ndarray, v2: np.ndarray) -> float:
-    """Compute angle (in radians) between two vectors."""
     cos_theta = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-8)
     return float(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
 
-
-
-# -----------------------------------------------------------------------------
-# 3) Node Feature Augmentation
-# -----------------------------------------------------------------------------
 def add_graph_centrality_features(g: nx.Graph):
-    """
-    Add graph-based centrality metrics per node:
-      - degree, clustering coefficient, betweenness centrality, PageRank score
-    """
     deg = dict(g.degree())
     clust = nx.clustering(g)
     btw = nx.betweenness_centrality(g)
@@ -89,7 +72,6 @@ def add_graph_centrality_features(g: nx.Graph):
         attr['pagerank'] = pr[n]
 
 def add_contact_number(g: nx.Graph, threshold: float = 9.0):
-    """Add contact number (neighbors within threshold Å) per node."""
     coords = {n: np.array(d['coords']) for n, d in g.nodes(data=True)}
     for n, attr in g.nodes(data=True):
         count = sum(
@@ -99,33 +81,20 @@ def add_contact_number(g: nx.Graph, threshold: float = 9.0):
         attr['contact_number'] = float(count)
 
 def add_relative_position(g: nx.Graph):
-    """Add normalized sequence index [0,1] per node."""
     N = g.number_of_nodes()
     for idx, (n, attr) in enumerate(g.nodes(data=True)):
         attr['relative_position'] = float(idx) / (N - 1) if N > 1 else 0.0
 
 def add_blosum62_feature(g: nx.Graph):
-    """Attach BLOSUM62 substitution scores per residue."""
     for n, attr in g.nodes(data=True):
         aa = attr['residue_name']
         idx = STANDARD_RES.index(aa) if aa in STANDARD_RES else None
         attr['blosum62'] = BLOSUM62[idx].tolist() if idx is not None else np.zeros(20).tolist()
 
-# -----------------------------------------------------------------------------
-# 4) Edge Feature Augmentation
-# -----------------------------------------------------------------------------
 def build_edge_features(g: nx.Graph) -> (torch.Tensor, torch.Tensor):
-    """
-    Build enhanced edge features:
-      - Bond types (knn, peptide, disulfide, etc.)
-      - Distance (Å)
-      - Angle relative to origin
-      - Direction vector (dx, dy, dz)
-      - Sequence separation
-    """
     edge_indices = []
     edge_attrs = []
-    LONG_RANGE_THRESHOLD = 12  # Residues separated by more than 12 positions are considered long-range
+    LONG_RANGE_THRESHOLD = 12
 
     node_map = {n: i for i, n in enumerate(g.nodes())}
     coords = {n: np.array(d['coords']) for n, d in g.nodes(data=True)}
@@ -157,7 +126,7 @@ def build_edge_features(g: nx.Graph) -> (torch.Tensor, torch.Tensor):
             calculate_angle(diff, coord_u),
             direction[0], direction[1], direction[2],
             seq_sep,
-            is_long_range  # Add flag for long-range interactions
+            is_long_range
         ])
 
     edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
@@ -165,21 +134,16 @@ def build_edge_features(g: nx.Graph) -> (torch.Tensor, torch.Tensor):
 
     return edge_index, edge_attr
 
-# -----------------------------------------------------------------------------
-# 5) NetworkX → PyG Conversion
-# -----------------------------------------------------------------------------
-def convert_nx_to_pyg(g: nx.Graph, esm_embeddings: np.ndarray) -> Data:
-    """Convert annotated NetworkX graph to torch_geometric Data object."""
-    one_hots, meilers, esms, coords = [], [], [], []
+def convert_nx_to_pyg(g: nx.Graph) -> Data:
+    one_hots, meilers, coords = [], [], []
     betas, seqs, bfs = [], [], []
     physchem, degree, clustering = [], [], []
     betweenness, pagerank, contact_num = [], [], []
-    relpos, blosum = [], []
+    relpos = []
 
     for idx, (n, attr) in enumerate(g.nodes(data=True)):
         one_hots.append(one_hot_encode_residue(attr['residue_name']))
         meilers.append(attr['meiler'])
-        esms.append(esm_embeddings[idx])
         coords.append(attr['coords'])
         betas.append(attr['c_beta_vector'])
         seqs.append(attr['sequence_neighbour_vector_n_to_c'])
@@ -192,14 +156,13 @@ def convert_nx_to_pyg(g: nx.Graph, esm_embeddings: np.ndarray) -> Data:
         pagerank.append(attr['pagerank'])
         contact_num.append(attr['contact_number'])
         relpos.append(attr['relative_position'])
-        # blosum.append(attr['blosum62'])
 
     edge_index, edge_attr = build_edge_features(g)
 
     return Data(
         one_hot_residues = torch.tensor(one_hots, dtype=torch.float),
         meiler_features  = torch.tensor(meilers, dtype=torch.float),
-        esm_embeddings   = torch.tensor(torch.stack(esms), dtype=torch.float),
+        x_coords         = torch.tensor(coords, dtype=torch.float),  # EGNN compatible
         pos              = torch.tensor(coords, dtype=torch.float),
         beta_carbon_vector = torch.tensor(betas, dtype=torch.float),
         seq_neighbour_vector = torch.tensor(seqs, dtype=torch.float),
@@ -211,16 +174,11 @@ def convert_nx_to_pyg(g: nx.Graph, esm_embeddings: np.ndarray) -> Data:
         pagerank         = torch.tensor(pagerank, dtype=torch.float).unsqueeze(1),
         contact_number   = torch.tensor(contact_num, dtype=torch.float).unsqueeze(1),
         relative_position = torch.tensor(relpos, dtype=torch.float).unsqueeze(1),
-        # blosum62         = torch.tensor(blosum, dtype=torch.float),
         edge_index       = edge_index,
         edge_attr        = edge_attr
     )
 
-# -----------------------------------------------------------------------------
-# 6) End-to-End Graph Builder
-# -----------------------------------------------------------------------------
-def uniprot_id_to_structure(pdb_path: str, embeddings: np.ndarray) -> Data:
-    """Main function to build a fully featured protein graph."""
+def uniprot_id_to_structure(pdb_path: str, residue_embeddings: np.ndarray, cls_embedding: np.ndarray | None) -> Data | None:
     config = ProteinGraphConfig(
         granularity="CA",
         edge_construction_functions=[
@@ -229,7 +187,7 @@ def uniprot_id_to_structure(pdb_path: str, embeddings: np.ndarray) -> Data:
             add_cation_pi_interactions,
             add_ionic_interactions,
             add_disulfide_interactions,
-            partial(add_k_nn_edges, k=10, long_interaction_threshold=12),
+            partial(add_k_nn_edges, k=5, long_interaction_threshold=0),
             add_distance_to_edges,
         ],
         node_metadata_functions=[
@@ -238,14 +196,22 @@ def uniprot_id_to_structure(pdb_path: str, embeddings: np.ndarray) -> Data:
         ],
     )
     g = construct_graph(config=config, path=pdb_path)
+
+    if g is None:
+        return None
+
     add_beta_carbon_vector(g)
     add_sequence_neighbour_vector(g)
-
     add_graph_centrality_features(g)
     add_contact_number(g)
     add_relative_position(g)
     add_blosum62_feature(g)
 
-    return convert_nx_to_pyg(g, embeddings)
+    pyg_graph = convert_nx_to_pyg(g)
 
+    if residue_embeddings is not None:
+        pyg_graph.residue_embeddings = torch.tensor(residue_embeddings, dtype=torch.float)
+    if cls_embedding is not None:
+        pyg_graph.cls_embedding = torch.tensor(cls_embedding, dtype=torch.float)
 
+    return pyg_graph

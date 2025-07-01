@@ -14,6 +14,9 @@ import numpy as np
 import random
 from torch_geometric.utils import subgraph
 import torch.nn.functional as F
+from tqdm import tqdm
+import re
+import gc
 
 def standardize_tensor(tensor, mean, std):
     """
@@ -45,7 +48,10 @@ class GNNDataset(Dataset):
             raise ValueError(f"Unknown dataset {dataset_name}")
 
         # Load graphs with memory mapping for large files
-        with open(f"./data/{dataset_name}_molecule.pkl", "rb") as f:
+        # with open(f"./data/{dataset_name}_molecule.pkl", "rb") as f:
+        #     self.mol_graphs = pickle.load(f)
+
+        with open(f"./data/{dataset_name}_molecule_graph_and_chemfm.pkl", "rb") as f:
             self.mol_graphs = pickle.load(f)
 
         # Load mappings and stats
@@ -62,7 +68,8 @@ class GNNDataset(Dataset):
         self.prot_paths = {}
         for protein_id in self.df['target_sequence'].unique():
             prot_file = self.prot_mapping[protein_id]
-            self.prot_paths[protein_id] = f"./data/{self.dataset_name}/protein_graphs/with_embeddings/{prot_file}.pkl"
+            # self.prot_paths[protein_id] = f"./data/{self.dataset_name}/protein_graphs/with_embeddings/{prot_file}.pkl"
+            self.prot_paths[protein_id] = f"./data/{self.dataset_name}/protein_graphs_with_all_embeddings/{prot_file}.pkl"
 
     def __len__(self):
         return len(self.df)
@@ -82,6 +89,8 @@ class GNNDataset(Dataset):
         # Molecule Graph Processing
         # ---------------------------
         mol_data = self.mol_graphs[drug_smiles]
+
+        # print(mol_data)
         
         # Standardize continuous molecule features
         x_onehot_cat = mol_data.x[:, :18]  # one-hot + categorical part
@@ -94,6 +103,7 @@ class GNNDataset(Dataset):
             std=self.mol_stats['x_continuous']['std']
         )
 
+
         drug_graph = Data(
             x = torch.cat([x_onehot_cat, x_continuous_std, x_donor_acceptor], dim=1),
             edge_index = mol_data.edge_index,
@@ -101,15 +111,21 @@ class GNNDataset(Dataset):
                 mol_data.edge_attr,
                 mean=self.mol_stats['edge_attr']['mean'],
                 std=self.mol_stats['edge_attr']['std']
-            )
+            ),
+            # cls_embedding = mol_data.cls_embedding,
+            # token_embeddings = mol_data.token_embeddings
         )
 
         # ---------------------------
         # Protein Graph Processing
         # ---------------------------
         # Load protein data using cached path
+        # print(self.prot_paths[protein_id])
         with open(self.prot_paths[protein_id], "rb") as f:
             prot_data = pickle.load(f)
+
+        # print(prot_data)
+        # exit()
 
         # Assemble protein features more efficiently
         prot_node_feats = torch.cat([
@@ -117,7 +133,7 @@ class GNNDataset(Dataset):
             standardize_tensor(prot_data.meiler_features,
                                mean=self.prot_stats['meiler_features']['mean'],
                                std=self.prot_stats['meiler_features']['std']),
-            prot_data.esm_embeddings,
+            prot_data.residue_embeddings,
             prot_data.beta_carbon_vector,
             prot_data.seq_neighbour_vector,
             standardize_tensor(prot_data.b_factor.reshape(-1, 1),
@@ -150,7 +166,9 @@ class GNNDataset(Dataset):
                     mean=self.prot_stats['edge_attr']['mean'],
                     std=self.prot_stats['edge_attr']['std']
                 )
-            ], dim=1)
+            ], dim=1),
+            # cls_embedding = prot_data.cls_embedding,
+            # residue_embeddings = prot_data.residue_embeddings
         )
 
         # ---------------------------
