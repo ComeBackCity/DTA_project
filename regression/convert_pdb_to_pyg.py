@@ -18,7 +18,7 @@ from functools import partial
 
 import networkx as nx
 from Bio.PDB import PDBParser
-from Bio.SubsMat.MatrixInfo import blosum62 as blosum62_dict
+# from Bio.SubsMat.MatrixInfo import blosum62 as blosum62_dict
 
 from graphein.protein.config import ProteinGraphConfig
 from graphein.protein.edges.distance import (
@@ -40,15 +40,15 @@ with open('./data/residue_features.json', 'r') as f:
 
 STANDARD_RES = list(residue_features.keys())
 
-BLOSUM62 = np.zeros((20, 20), dtype=float)
-for i, aa1 in enumerate(STANDARD_RES):
-    for j, aa2 in enumerate(STANDARD_RES):
-        if (aa1, aa2) in blosum62_dict:
-            BLOSUM62[i, j] = blosum62_dict[(aa1, aa2)]
-        elif (aa2, aa1) in blosum62_dict:
-            BLOSUM62[i, j] = blosum62_dict[(aa2, aa1)]
-        else:
-            BLOSUM62[i, j] = 0.0
+# BLOSUM62 = np.zeros((20, 20), dtype=float)
+# for i, aa1 in enumerate(STANDARD_RES):
+#     for j, aa2 in enumerate(STANDARD_RES):
+#         if (aa1, aa2) in blosum62_dict:
+#             BLOSUM62[i, j] = blosum62_dict[(aa1, aa2)]
+#         elif (aa2, aa1) in blosum62_dict:
+#             BLOSUM62[i, j] = blosum62_dict[(aa2, aa1)]
+#         else:
+#             BLOSUM62[i, j] = 0.0
 
 def one_hot_encode_residue(resname: str) -> np.ndarray:
     vec = np.zeros(len(STANDARD_RES), dtype=float)
@@ -85,11 +85,11 @@ def add_relative_position(g: nx.Graph):
     for idx, (n, attr) in enumerate(g.nodes(data=True)):
         attr['relative_position'] = float(idx) / (N - 1) if N > 1 else 0.0
 
-def add_blosum62_feature(g: nx.Graph):
-    for n, attr in g.nodes(data=True):
-        aa = attr['residue_name']
-        idx = STANDARD_RES.index(aa) if aa in STANDARD_RES else None
-        attr['blosum62'] = BLOSUM62[idx].tolist() if idx is not None else np.zeros(20).tolist()
+# def add_blosum62_feature(g: nx.Graph):
+#     for n, attr in g.nodes(data=True):
+#         aa = attr['residue_name']
+#         idx = STANDARD_RES.index(aa) if aa in STANDARD_RES else None
+#         attr['blosum62'] = BLOSUM62[idx].tolist() if idx is not None else np.zeros(20).tolist()
 
 def build_edge_features(g: nx.Graph) -> (torch.Tensor, torch.Tensor):
     edge_indices = []

@@ -135,7 +135,8 @@ def get_atom_features(atom, mol, coords, centroid):
         float_flag(atom.HasProp('_CIPCode')),
         float(atom.GetTotalNumHs()),
         float(atom.GetDegree()),
-        float(atom.GetExplicitValence()),
+        # float(atom.GetExplicitValence()),
+        float(atom.GetValence(getExplicit=True)),
         float(atom.GetFormalCharge()),
         float(atom.GetImplicitValence()),
         float(atom.GetNumRadicalElectrons()),
@@ -233,8 +234,8 @@ def process(dataset_name):
         mol = Chem.MolFromSmiles(smile)
         if mol:
             graph_data = mol2graph(mol)
-            print(graph_data)
-            exit()
+            # print(graph_data)
+            # exit()
             if graph_data is not None:
                 try:
                     # Get ChemFM embeddings (token and CLS)

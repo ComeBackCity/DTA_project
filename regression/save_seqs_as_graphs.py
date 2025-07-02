@@ -13,7 +13,7 @@ from rdkit.Chem import ChemicalFeatures
 from rdkit import RDConfig
 from tqdm import tqdm
 import re
-from tdc.multi_pred import DTI
+# from tdc.multi_pred import DTI
 import sys
 sys.path.append("../")
 from convert_pdb_to_pyg import uniprot_id_to_structure
