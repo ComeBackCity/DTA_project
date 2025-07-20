@@ -43,6 +43,7 @@ def setup_seed(seed):
     torch.cuda.manual_seed(seed)               
     torch.cuda.manual_seed_all(seed)           
     torch.backends.cudnn.deterministic = True  
+    torch.backends.cudnn.benchmark = True
 
 
 def val(model, criterion, dataloader, device):
@@ -336,11 +337,29 @@ def main():
     save_model_flag = params.get("save_model")
     data_root = params.get("data_root")
     fpath = os.path.join(data_root, DATASET)
+
+    transforms = TupleCompose([
+        MaskDrugNodeFeatures(prob=0.2, mask_prob=0.03),
+        PerturbDrugNodeFeatures(prob=0.2, noise_std=0.005),
+        PerturbDrugEdgeAttr(prob=0.2, noise_std=0.005),
+        MaskProteinNodeFeatures(prob=0.2, mask_prob=0.03),
+        PerturbProteinNodeFeatures(prob=0.2, noise_std=0.005),
+        PerturbProteinEdgeAttr(prob=0.2, noise_std=0.005),
+        DropProteinNodes(prob=0.25, drop_prob=0.03),
+        DropProteinEdges(prob=0.25, drop_prob=0.03),
+        AddRandomProteinEdges(prob=0.2, add_prob=0.005)
+    ])
     
-    train_set = GNNDataset(DATASET, split='train')
+    train_set = GNNDataset(DATASET, split='train', transform = transforms)
     val_set = GNNDataset(DATASET, split='valid')
     
     labels = train_set.get_labels()
+
+    
+
+    # Compose drug transforms
+    
+
     
     # sampler = BalancedRegressionBatchSampler2(labels, params.get('batch_size'), minority_ratio=.6, shuffle=True)
     # sampler = BalancedRegressionBatchSampler2(labels, params.get('batch_size'), minority_ratio=.55, shuffle=True)
@@ -350,8 +369,12 @@ def main():
         # batch_sampler=sampler, 
         batch_size=params.get('batch_size'),
         shuffle=True,
-        num_workers=8, 
-        collate_fn=collate  
+        num_workers=12, 
+        collate_fn=collate,
+        pin_memory=True,
+        persistent_workers=True,  # Keep workers alive for faster subsequent epochs
+        # multiprocessing_context='fork' if os.name == 'posix' else None,  # Use 'fork' for better performance on Linux,
+        # transform = transforms
     )
     
     # train_loader = DataLoader(
@@ -366,8 +389,11 @@ def main():
         val_set, 
         batch_size=params.get('batch_size'), 
         shuffle=False, 
-        num_workers=8, 
-        collate_fn=collate  
+        num_workers=12, 
+        collate_fn=collate,
+        pin_memory=True,
+        persistent_workers=True,  # Keep workers alive for faster subsequent epochs
+        # multiprocessing_context='fork' if os.name == 'posix' else None,  # Use 'fork' for better performance on Linux
     )
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -382,6 +408,8 @@ def main():
         drug_layers=3, 
         out_dim=1,
     ).to(device)
+
+    # model = torch.compile(model)
     
     # model = MGraphDTA(
     #     prot_feat_dim=1204, 

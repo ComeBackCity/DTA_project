@@ -205,7 +205,7 @@ def uniprot_id_to_structure(pdb_path: str, residue_embeddings: np.ndarray, cls_e
     add_graph_centrality_features(g)
     add_contact_number(g)
     add_relative_position(g)
-    add_blosum62_feature(g)
+    # add_blosum62_feature(g)
 
     pyg_graph = convert_nx_to_pyg(g)
 

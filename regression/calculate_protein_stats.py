@@ -51,7 +51,7 @@ if __name__ == "__main__":
         if dataset not in ['davis', 'kiba']:
             continue
         print(f"Processing {dataset}")
-        data_directory = f"./data/{dataset}/protein_graphs/with_embeddings"
+        data_directory = f"./data/{dataset}/protein_graphs_with_all_embeddings"
         stats = calculate_mean_std_per_key(data_directory)
 
         with open(f'./data/{dataset}_stats.pkl', 'wb') as f:

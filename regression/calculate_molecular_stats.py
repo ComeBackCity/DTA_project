@@ -1,5 +1,4 @@
 import os
-import pickle
 import torch
 import collections
 
@@ -8,8 +7,8 @@ def calculate_mean_std_per_key(data_dir, file_name):
     Calculate mean and std for continuous features in 'x' and 'edge_attr' of a PyG molecule dataset.
 
     Args:
-        data_dir (str): Directory where the molecule .pkl is stored.
-        file_name (str): Filename of the molecule .pkl.
+        data_dir (str): Directory where the molecule .pt is stored.
+        file_name (str): Filename of the molecule .pt.
 
     Returns:
         stats (dict): Dictionary with 'mean' and 'std' tensors per feature group.
@@ -17,21 +16,16 @@ def calculate_mean_std_per_key(data_dir, file_name):
     all_tensors = collections.defaultdict(list)
 
     file_path = os.path.join(data_dir, file_name)
-    with open(file_path, 'rb') as f:
-        data_dict = pickle.load(f)
+    data_dict = torch.load(file_path)
 
     for data in data_dict.values():
         if hasattr(data, 'x') and torch.is_tensor(data.x):
-            # Structure:
-            # x = [one-hot (12), categorical (6), continuous (12 + 2 from 3D features), donor/acceptor (2)]
-            #   => total = 12 + 6 + 14 + 2 = 34 features
-            # Continuous + 3D-derived features = indices 18:32
-            continuous_part = data.x[:, 18:32]  # 14 columns (12 + 2 new)
+            # x: [one-hot (12), categorical (6), continuous (12 + 2 from 3D features), donor/acceptor (2)]
+            continuous_part = data.x[:, 18:32]  # 14 columns
             all_tensors['x_continuous'].append(continuous_part)
 
         if hasattr(data, 'edge_attr') and torch.is_tensor(data.edge_attr):
-            # New edge_attr = 8 features
-            # [bond_type, conjugated, aromatic, stereoZ, stereoE, bond length, bond angle, torsion angle]
+            # edge_attr: 8 features
             all_tensors['edge_attr'].append(data.edge_attr)
 
     stats = {}
@@ -50,13 +44,13 @@ if __name__ == "__main__":
     for dataset in ['davis', 'kiba']:
         print(f"Processing {dataset} dataset...")
         data_dir = "./data/"
-        file_name = f"{dataset}_molecule.pkl"
+        file_name = f"{dataset}_molecule_graph_and_chemfm.pt"  # <- Changed from .pkl to .pt
 
         stats = calculate_mean_std_per_key(data_dir, file_name)
 
-        # Save to file
-        with open(f'./data/{dataset}_molecule_stats.pkl', 'wb') as f:
-            pickle.dump(stats, f)
+        # Save to .pt
+        output_file = f'./data/{dataset}_molecule_stats.pt'
+        torch.save(stats, output_file)
 
         # Print stats
         for key, value in stats.items():

@@ -7,60 +7,36 @@ import pandas as pd
 import torch
 from torch_geometric import data as DATA
 from tqdm import tqdm
-import networkx as nx
 from rdkit import Chem
 from rdkit.Chem import ChemicalFeatures, AllChem
 from rdkit import RDConfig
 from transformers import AutoTokenizer, AutoModel
 
-from transformers import AutoTokenizer, AutoModel
-
+# ChemFM model load
 model_name = "ChemFM/ChemFM-1B"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
-tokenizer.pad_token = tokenizer.eos_token  # Set padding token
+tokenizer.pad_token = tokenizer.eos_token
 model = AutoModel.from_pretrained(model_name).eval().to("cuda" if torch.cuda.is_available() else "cpu")
-
-
 
 @torch.no_grad()
 def extract_chemfm_features(smiles: str):
-    # Removed debug prints and exit
     inputs = tokenizer(smiles, return_tensors="pt", padding=True, truncation=True)
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
     outputs = model(**inputs)
-
-    # CLS token (first token) embedding
-    # [batch_size, 1, hidden_dim] -> [hidden_dim]
     cls_embedding = outputs.last_hidden_state[:, 0, :].cpu()
-
-    # Token-level embeddings (excluding CLS and potentially SEP)
-    # Assuming BERT-like structure with CLS at start and SEP at end
-    # [batch_size, seq_len, hidden_dim] -> [seq_len - 2, hidden_dim] for tokens between CLS and SEP
-    # If no SEP, [batch_size, seq_len, hidden_dim] -> [seq_len - 1, hidden_dim] for tokens after CLS
-    # Let's return all tokens except CLS for now and let the model handle potential SEP.
     token_embeddings = outputs.last_hidden_state[:, 1:, :].squeeze(0).cpu()
-
     return token_embeddings, cls_embedding
 
-
-# -----------------------------------------------------------------------------
 # Chemical feature factory
-# -----------------------------------------------------------------------------
 fdef_name = osp.join(RDConfig.RDDataDir, 'BaseFeatures.fdef')
 chem_feature_factory = ChemicalFeatures.BuildFeatureFactory(fdef_name)
 
-# -----------------------------------------------------------------------------
-# Precomputed element properties
-# -----------------------------------------------------------------------------
-electronegativity = {
-    'H': 2.20, 'B': 2.04, 'C': 2.55, 'N': 3.04, 'O': 3.44, 'F': 3.98,
-    'Si': 1.90, 'P': 2.19, 'S': 2.58, 'Cl': 3.16, 'Br': 2.96, 'I': 2.66
-}
+# Precomputed properties (same as before)
+electronegativity = { 'H': 2.20, 'B': 2.04, 'C': 2.55, 'N': 3.04, 'O': 3.44, 'F': 3.98,
+                      'Si': 1.90, 'P': 2.19, 'S': 2.58, 'Cl': 3.16, 'Br': 2.96, 'I': 2.66 }
 
-vdw_radius = {
-    'H': 1.20, 'B': 2.00, 'C': 1.70, 'N': 1.55, 'O': 1.52, 'F': 1.47,
-    'Si': 2.10, 'P': 1.80, 'S': 1.80, 'Cl': 1.75, 'Br': 1.85, 'I': 1.98
-}
+vdw_radius = { 'H': 1.20, 'B': 2.00, 'C': 1.70, 'N': 1.55, 'O': 1.52, 'F': 1.47,
+               'Si': 2.10, 'P': 1.80, 'S': 1.80, 'Cl': 1.75, 'Br': 1.85, 'I': 1.98 }
 
 atomic_properties = {
     'H': {'atomic_mass': 1.008, 'a_num': 1},
@@ -77,17 +53,13 @@ atomic_properties = {
     'I': {'atomic_mass': 126.904, 'a_num': 53}
 }
 
-assert isinstance(atomic_properties, dict), "atomic_properties must be a dictionary!"
-
-# -----------------------------------------------------------------------------
-# Helper Functions
-# -----------------------------------------------------------------------------
+# Helper functions
 def setup_seed(seed=42):
-    random.seed(seed)                          
-    np.random.seed(seed)                       
-    torch.manual_seed(seed)                    
-    torch.cuda.manual_seed_all(seed)           
-    torch.backends.cudnn.deterministic = True  
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
 
 def compute_gasteiger(mol):
     try:
@@ -135,8 +107,7 @@ def get_atom_features(atom, mol, coords, centroid):
         float_flag(atom.HasProp('_CIPCode')),
         float(atom.GetTotalNumHs()),
         float(atom.GetDegree()),
-        # float(atom.GetExplicitValence()),
-        float(atom.GetValence(getExplicit=True)),
+        float(atom.GetExplicitValence()),
         float(atom.GetFormalCharge()),
         float(atom.GetImplicitValence()),
         float(atom.GetNumRadicalElectrons()),
@@ -185,6 +156,7 @@ def mol2graph(mol):
         return None
     centroid = np.mean(coords, axis=0)
     compute_gasteiger(mol)
+    import networkx as nx
     g = nx.Graph()
     for i, atom in enumerate(mol.GetAtoms()):
         g.add_node(i, features=get_atom_features(atom, mol, coords, centroid))
@@ -208,9 +180,7 @@ def mol2graph(mol):
         edge_attr = torch.FloatTensor([[0] * 8])
     return DATA.Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
 
-# -----------------------------------------------------------------------------
 # Process Entry Point
-# -----------------------------------------------------------------------------
 def process(dataset_name):
     if dataset_name in ["davis", "kiba"]:
         df_train = pd.read_csv(f"./data/{dataset_name}/csvs/{dataset_name}_train_42.csv")
@@ -226,39 +196,29 @@ def process(dataset_name):
     else:
         raise ValueError("Unsupported dataset")
 
-    # We will store Data objects in a dictionary mapping SMILES to Data objects
     graph_dict = {}
-    
+
     print(f"Processing {dataset_name} molecules...")
     for smile in tqdm(smiles_list):
         mol = Chem.MolFromSmiles(smile)
         if mol:
             graph_data = mol2graph(mol)
-            # print(graph_data)
-            # exit()
             if graph_data is not None:
                 try:
-                    # Get ChemFM embeddings (token and CLS)
                     token_embeddings, cls_embedding = extract_chemfm_features(smile)
-                    
-                    # Add embeddings as separate attributes to the Data object
                     graph_data.token_embeddings = token_embeddings
                     graph_data.cls_embedding = cls_embedding
-                    
-                    # Store the data object in the dictionary with SMILES as key
                     graph_dict[smile] = graph_data
-                    
                 except Exception as e:
                     print(f"Error processing SMILES {smile}: {e}")
-                    continue # Skip this molecule if embedding fails
+                    continue
 
-    # Save the dictionary of Data objects
-    output_path = f"./data/{dataset_name}_molecule_graph_and_chemfm.pkl"
-    print(f"Saving processed molecules, graphs, and features to {output_path}")
-    with open(output_path, "wb") as f:
-        pickle.dump(graph_dict, f)
+    # Save the dictionary as .pt file
+    output_path = f"./data/{dataset_name}_molecule_graph_and_chemfm.pt"
+    print(f"Saving processed molecules to {output_path}")
+    torch.save(graph_dict, output_path)
 
-# -----------------------------------------------------------------------------
+# Run
 if __name__ == "__main__":
     setup_seed(100)
     process("davis")

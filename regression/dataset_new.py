@@ -33,13 +33,243 @@ def standardize_tensor(tensor, mean, std):
     std = torch.tensor(std, device=tensor.device, dtype=tensor.dtype)
     return (tensor - mean) / (std + 1e-6)
 
+# class GNNDataset(Dataset):
+#     def __init__(self, dataset_name, split='train'):
+#         super().__init__()
+#         self.dataset_name = dataset_name
+#         self.split = split
+
+#         # Load dataframes
+#         if dataset_name in ["davis", "kiba"]:
+#             self.df = pd.read_csv(f"./data/{dataset_name}/csvs/{dataset_name}_{split}_42.csv")
+#         elif dataset_name == "full_toxcast":
+#             self.df = pd.read_csv(f"./data/{dataset_name}/raw/data_{split}.csv")
+#         else:
+#             raise ValueError(f"Unknown dataset {dataset_name}")
+
+#         # Load graphs with memory mapping for large files
+#         # with open(f"./data/{dataset_name}_molecule.pkl", "rb") as f:
+#         #     self.mol_graphs = pickle.load(f)
+
+#         with open(f"./data/{dataset_name}_molecule_graph_and_chemfm.pkl", "rb") as f:
+#             self.mol_graphs = pickle.load(f)
+
+#         # Load mappings and stats
+#         with open(f"./data/{dataset_name}_mapping.pkl", "rb") as f:
+#             self.prot_mapping = pickle.load(f)
+
+#         with open(f"./data/{dataset_name}_molecule_stats.pkl", "rb") as f:
+#             self.mol_stats = pickle.load(f)
+
+#         with open(f"./data/{dataset_name}_stats.pkl", "rb") as f:
+#             self.prot_stats = pickle.load(f)
+            
+#         # Pre-compute and cache protein graph paths
+#         self.prot_paths = {}
+#         for protein_id in self.df['target_sequence'].unique():
+#             prot_file = self.prot_mapping[protein_id]
+#             # self.prot_paths[protein_id] = f"./data/{self.dataset_name}/protein_graphs/with_embeddings/{prot_file}.pkl"
+#             self.prot_paths[protein_id] = f"./data/{self.dataset_name}/protein_graphs_with_all_embeddings/{prot_file}.pkl"
+
+#     def __len__(self):
+#         return len(self.df)
+
+#     def __getitem__(self, idx):
+#         if self.dataset_name == 'full_toxcast':
+#             protein_key, drug_key, label_key = "sequence", "smiles", "label"
+#         else:
+#             protein_key, drug_key, label_key = "target_sequence", "compound_iso_smiles", "affinity"
+
+#         # Load raw entries
+#         protein_id = self.df.at[idx, protein_key]
+#         drug_smiles = self.df.at[idx, drug_key]
+#         label = torch.tensor(self.df.at[idx, label_key], dtype=torch.float32)
+
+#         # ---------------------------
+#         # Molecule Graph Processing
+#         # ---------------------------
+#         mol_data = self.mol_graphs[drug_smiles]
+#         # print(mol_data)
+
+#         # print(mol_data)
+        
+#         # Standardize continuous molecule features
+#         x_onehot_cat = mol_data.x[:, :18]  # one-hot + categorical part
+#         x_continuous = mol_data.x[:, 18:32]  # continuous part (12+2 features)
+#         x_donor_acceptor = mol_data.x[:, 32:]  # donor/acceptor flags
+
+#         x_continuous_std = standardize_tensor(
+#             x_continuous,
+#             mean=self.mol_stats['x_continuous']['mean'],
+#             std=self.mol_stats['x_continuous']['std']
+#         )
+
+
+#         drug_graph = Data(
+#             x = torch.cat([x_onehot_cat, x_continuous_std, x_donor_acceptor], dim=1),
+#             edge_index = mol_data.edge_index,
+#             edge_attr = standardize_tensor(
+#                 mol_data.edge_attr,
+#                 mean=self.mol_stats['edge_attr']['mean'],
+#                 std=self.mol_stats['edge_attr']['std']
+#             ),
+#             # cls_embedding = mol_data.cls_embedding,
+#             # token_embeddings = mol_data.token_embeddings
+#         )
+
+#         # ---------------------------
+#         # Protein Graph Processing
+#         # ---------------------------
+#         # Load protein data using cached path
+#         # print(self.prot_paths[protein_id])
+#         with open(self.prot_paths[protein_id], "rb") as f:
+#             prot_data = pickle.load(f)
+
+#         # print(prot_data)
+#         # exit()
+
+#         # Assemble protein features more efficiently
+#         prot_node_feats = torch.cat([
+#             prot_data.one_hot_residues,
+#             standardize_tensor(prot_data.meiler_features,
+#                                mean=self.prot_stats['meiler_features']['mean'],
+#                                std=self.prot_stats['meiler_features']['std']),
+#             prot_data.residue_embeddings,
+#             prot_data.beta_carbon_vector,
+#             prot_data.seq_neighbour_vector,
+#             standardize_tensor(prot_data.b_factor.reshape(-1, 1),
+#                                mean=self.prot_stats['b_factor']['mean'],
+#                                std=self.prot_stats['b_factor']['std']),
+#             standardize_tensor(prot_data.physicochemical_feat,
+#                                mean=self.prot_stats['physicochemical_feat']['mean'],
+#                                std=self.prot_stats['physicochemical_feat']['std']),
+#             standardize_tensor(prot_data.degree,
+#                                mean=self.prot_stats['degree']['mean'],
+#                                std=self.prot_stats['degree']['std']),
+#             standardize_tensor(prot_data.betweenness,
+#                                mean=self.prot_stats['betweenness']['mean'],
+#                                std=self.prot_stats['betweenness']['std']),
+#             standardize_tensor(prot_data.pagerank,
+#                                mean=self.prot_stats['pagerank']['mean'],
+#                                std=self.prot_stats['pagerank']['std']),
+#             standardize_tensor(prot_data.contact_number,
+#                                mean=self.prot_stats['contact_number']['mean'],
+#                                std=self.prot_stats['contact_number']['std'])
+#         ], dim=1)
+
+#         protein_graph = Data(
+#             x = prot_node_feats,
+#             edge_index = prot_data.edge_index,
+#             edge_attr = torch.cat([
+#                 prot_data.edge_attr[:, :6],  # bond-type kinds
+#                 standardize_tensor(
+#                     prot_data.edge_attr[:, 6:],  # distance, angle, dx, dy, dz, seq_sep
+#                     mean=self.prot_stats['edge_attr']['mean'],
+#                     std=self.prot_stats['edge_attr']['std']
+#                 )
+#             ], dim=1),
+#             # cls_embedding = prot_data.cls_embedding,
+#             # residue_embeddings = prot_data.residue_embeddings
+#         )
+
+#         # ---------------------------
+#         # AUGMENTATION (train split only)
+#         # ---------------------------
+#         if self.split == 'train':
+#             # List of all possible non-subgraphing augmentations
+#             non_subgraph_augs = [
+#                 # Drug graph augmentations
+#                 (lambda: mask_node_features(drug_graph.x, mask_prob=0.03), 0.2), 
+#                 (lambda: perturb_features(drug_graph.x, noise_std=0.005), 0.2),
+#                 (lambda: perturb_edge_attr(drug_graph.edge_attr, noise_std=0.005), 0.2),
+#                 # Protein graph augmentations
+#                 (lambda: mask_node_features(protein_graph.x, mask_prob=0.03), 0.2),
+#                 (lambda: perturb_features(protein_graph.x, noise_std=0.005), 0.2),
+#                 (lambda: perturb_edge_attr(protein_graph.edge_attr, noise_std=0.005), 0.2),
+#                 # Node and edge operations
+#                 (lambda: drop_nodes(protein_graph.x, protein_graph.edge_index, protein_graph.edge_attr, drop_prob=0.03), 0.25),
+#                 (lambda: drop_edges(protein_graph.edge_index, protein_graph.edge_attr, drop_prob=0.03), 0.25),
+#                 (lambda: add_random_edges(protein_graph.edge_index, protein_graph.edge_attr, protein_graph.x.size(0), add_prob=0.005), 0.2)
+#             ]
+            
+#             # Randomly select up to 3 non-subgraphing augmentations
+#             selected_augs = []
+#             for aug_func, prob in non_subgraph_augs:
+#                 if random.random() < prob:
+#                     selected_augs.append(aug_func)
+#                 if len(selected_augs) >= 3:
+#                     break
+            
+#             # Apply selected augmentations
+#             for aug_func in selected_augs:
+#                 result = aug_func()
+#                 if isinstance(result, tuple):
+#                     if len(result) == 2:  # edge operations
+#                         protein_graph.edge_index, protein_graph.edge_attr = result
+#                     else:  # node operations
+#                         protein_graph.x, protein_graph.edge_index, protein_graph.edge_attr = result
+#                 else:
+#                     if result.shape == drug_graph.x.shape:
+#                         drug_graph.x = result
+#                     elif result.shape == protein_graph.x.shape:
+#                         protein_graph.x = result
+#                     elif result.shape == drug_graph.edge_attr.shape:
+#                         drug_graph.edge_attr = result
+#                     elif result.shape == protein_graph.edge_attr.shape:
+#                         protein_graph.edge_attr = result
+            
+#             # Subgraph sampling (30% chance) - independent of other augmentations
+#             if random.random() < 0.3:
+#                 # Randomly sample between 60% and 85% of the graph
+#                 sample_ratio = random.uniform(0.6, 0.85)
+#                 protein_graph.x, protein_graph.edge_index, protein_graph.edge_attr = sample_subgraph(
+#                     protein_graph.x, protein_graph.edge_index, protein_graph.edge_attr, 
+#                     sample_ratio=sample_ratio)
+
+#         return drug_graph, protein_graph, label
+
+#     def get_labels(self):
+#         if self.dataset_name == 'full_toxcast':
+#             return list(self.df["label"])
+#         else:
+#             return list(self.df["affinity"])
+
+        
+# def collate(data_list):
+#     # Pre-allocate lists for better memory efficiency
+#     drug_graphs = []
+#     protein_graphs = []
+#     labels = []
+    
+#     # Collect data
+#     for data in data_list:
+#         drug_graphs.append(data[0])
+#         protein_graphs.append(data[1])
+#         labels.append(data[2])
+    
+#     # Create batches
+#     batchA = Batch.from_data_list(drug_graphs)
+#     batchB = Batch.from_data_list(protein_graphs)
+#     labels = torch.stack(labels)  # More efficient than torch.Tensor
+    
+#     return batchA, batchB, labels
+
+import torch
+import pandas as pd
+from torch.utils.data import Dataset
+from torch_geometric.data import Data
+
+def standardize_tensor(tensor, mean, std):
+    mean = torch.tensor(mean, dtype=tensor.dtype, device=tensor.device)
+    std = torch.tensor(std, dtype=tensor.dtype, device=tensor.device)
+    return (tensor - mean) / (std + 1e-8)
+
 class GNNDataset(Dataset):
-    def __init__(self, dataset_name, split='train'):
+    def __init__(self, dataset_name, split='train', transform = None):
         super().__init__()
         self.dataset_name = dataset_name
         self.split = split
 
-        # Load dataframes
         if dataset_name in ["davis", "kiba"]:
             self.df = pd.read_csv(f"./data/{dataset_name}/csvs/{dataset_name}_{split}_42.csv")
         elif dataset_name == "full_toxcast":
@@ -47,183 +277,81 @@ class GNNDataset(Dataset):
         else:
             raise ValueError(f"Unknown dataset {dataset_name}")
 
-        # Load graphs with memory mapping for large files
-        # with open(f"./data/{dataset_name}_molecule.pkl", "rb") as f:
-        #     self.mol_graphs = pickle.load(f)
+        self.mol_graphs = torch.load(f"./data/{dataset_name}_molecule_graph_and_chemfm.pt")
 
-        with open(f"./data/{dataset_name}_molecule_graph_and_chemfm.pkl", "rb") as f:
-            self.mol_graphs = pickle.load(f)
-
-        # Load mappings and stats
+        import pickle
         with open(f"./data/{dataset_name}_mapping.pkl", "rb") as f:
             self.prot_mapping = pickle.load(f)
 
-        with open(f"./data/{dataset_name}_molecule_stats.pkl", "rb") as f:
-            self.mol_stats = pickle.load(f)
-
+        self.mol_stats = torch.load(f"./data/{dataset_name}_molecule_stats.pt")
         with open(f"./data/{dataset_name}_stats.pkl", "rb") as f:
             self.prot_stats = pickle.load(f)
-            
-        # Pre-compute and cache protein graph paths
-        self.prot_paths = {}
-        for protein_id in self.df['target_sequence'].unique():
-            prot_file = self.prot_mapping[protein_id]
-            # self.prot_paths[protein_id] = f"./data/{self.dataset_name}/protein_graphs/with_embeddings/{prot_file}.pkl"
-            self.prot_paths[protein_id] = f"./data/{self.dataset_name}/protein_graphs_with_all_embeddings/{prot_file}.pkl"
+
+        self.prot_paths = {
+            protein_id: f"./data/{dataset_name}/protein_graphs_with_all_embeddings_pt/{self.prot_mapping[protein_id]}.pt"
+            for protein_id in self.df['target_sequence'].unique()
+        }
+
+        self.transform = transform
 
     def __len__(self):
         return len(self.df)
 
     def __getitem__(self, idx):
-        if self.dataset_name == 'full_toxcast':
-            protein_key, drug_key, label_key = "sequence", "smiles", "label"
-        else:
-            protein_key, drug_key, label_key = "target_sequence", "compound_iso_smiles", "affinity"
+        protein_key, drug_key, label_key = ("sequence", "smiles", "label") \
+            if self.dataset_name == 'full_toxcast' \
+            else ("target_sequence", "compound_iso_smiles", "affinity")
 
-        # Load raw entries
         protein_id = self.df.at[idx, protein_key]
         drug_smiles = self.df.at[idx, drug_key]
         label = torch.tensor(self.df.at[idx, label_key], dtype=torch.float32)
 
-        # ---------------------------
-        # Molecule Graph Processing
-        # ---------------------------
         mol_data = self.mol_graphs[drug_smiles]
 
-        # print(mol_data)
-        
-        # Standardize continuous molecule features
-        x_onehot_cat = mol_data.x[:, :18]  # one-hot + categorical part
-        x_continuous = mol_data.x[:, 18:32]  # continuous part (12+2 features)
-        x_donor_acceptor = mol_data.x[:, 32:]  # donor/acceptor flags
-
         x_continuous_std = standardize_tensor(
-            x_continuous,
+            mol_data.x[:, 18:32],
             mean=self.mol_stats['x_continuous']['mean'],
             std=self.mol_stats['x_continuous']['std']
         )
 
-
         drug_graph = Data(
-            x = torch.cat([x_onehot_cat, x_continuous_std, x_donor_acceptor], dim=1),
-            edge_index = mol_data.edge_index,
-            edge_attr = standardize_tensor(
+            x=torch.cat([mol_data.x[:, :18], x_continuous_std, mol_data.x[:, 32:]], dim=1),
+            edge_index=mol_data.edge_index,
+            edge_attr=standardize_tensor(
                 mol_data.edge_attr,
                 mean=self.mol_stats['edge_attr']['mean'],
                 std=self.mol_stats['edge_attr']['std']
-            ),
-            # cls_embedding = mol_data.cls_embedding,
-            # token_embeddings = mol_data.token_embeddings
+            )
         )
 
-        # ---------------------------
-        # Protein Graph Processing
-        # ---------------------------
-        # Load protein data using cached path
-        # print(self.prot_paths[protein_id])
-        with open(self.prot_paths[protein_id], "rb") as f:
-            prot_data = pickle.load(f)
+        prot_data = torch.load(self.prot_paths[protein_id])
 
-        # print(prot_data)
-        # exit()
-
-        # Assemble protein features more efficiently
         prot_node_feats = torch.cat([
             prot_data.one_hot_residues,
-            standardize_tensor(prot_data.meiler_features,
-                               mean=self.prot_stats['meiler_features']['mean'],
-                               std=self.prot_stats['meiler_features']['std']),
+            standardize_tensor(prot_data.meiler_features, self.prot_stats['meiler_features']['mean'], self.prot_stats['meiler_features']['std']),
             prot_data.residue_embeddings,
             prot_data.beta_carbon_vector,
             prot_data.seq_neighbour_vector,
-            standardize_tensor(prot_data.b_factor.reshape(-1, 1),
-                               mean=self.prot_stats['b_factor']['mean'],
-                               std=self.prot_stats['b_factor']['std']),
-            standardize_tensor(prot_data.physicochemical_feat,
-                               mean=self.prot_stats['physicochemical_feat']['mean'],
-                               std=self.prot_stats['physicochemical_feat']['std']),
-            standardize_tensor(prot_data.degree,
-                               mean=self.prot_stats['degree']['mean'],
-                               std=self.prot_stats['degree']['std']),
-            standardize_tensor(prot_data.betweenness,
-                               mean=self.prot_stats['betweenness']['mean'],
-                               std=self.prot_stats['betweenness']['std']),
-            standardize_tensor(prot_data.pagerank,
-                               mean=self.prot_stats['pagerank']['mean'],
-                               std=self.prot_stats['pagerank']['std']),
-            standardize_tensor(prot_data.contact_number,
-                               mean=self.prot_stats['contact_number']['mean'],
-                               std=self.prot_stats['contact_number']['std'])
+            standardize_tensor(prot_data.b_factor.reshape(-1, 1), self.prot_stats['b_factor']['mean'], self.prot_stats['b_factor']['std']),
+            standardize_tensor(prot_data.physicochemical_feat, self.prot_stats['physicochemical_feat']['mean'], self.prot_stats['physicochemical_feat']['std']),
+            standardize_tensor(prot_data.degree, self.prot_stats['degree']['mean'], self.prot_stats['degree']['std']),
+            standardize_tensor(prot_data.betweenness, self.prot_stats['betweenness']['mean'], self.prot_stats['betweenness']['std']),
+            standardize_tensor(prot_data.pagerank, self.prot_stats['pagerank']['mean'], self.prot_stats['pagerank']['std']),
+            standardize_tensor(prot_data.contact_number, self.prot_stats['contact_number']['mean'], self.prot_stats['contact_number']['std'])
         ], dim=1)
 
         protein_graph = Data(
-            x = prot_node_feats,
-            edge_index = prot_data.edge_index,
-            edge_attr = torch.cat([
-                prot_data.edge_attr[:, :6],  # bond-type kinds
-                standardize_tensor(
-                    prot_data.edge_attr[:, 6:],  # distance, angle, dx, dy, dz, seq_sep
-                    mean=self.prot_stats['edge_attr']['mean'],
-                    std=self.prot_stats['edge_attr']['std']
-                )
-            ], dim=1),
-            # cls_embedding = prot_data.cls_embedding,
-            # residue_embeddings = prot_data.residue_embeddings
+            x=prot_node_feats,
+            edge_index=prot_data.edge_index,
+            edge_attr=torch.cat([
+                prot_data.edge_attr[:, :6],
+                standardize_tensor(prot_data.edge_attr[:, 6:], self.prot_stats['edge_attr']['mean'], self.prot_stats['edge_attr']['std'])
+            ], dim=1)
         )
 
-        # ---------------------------
-        # AUGMENTATION (train split only)
-        # ---------------------------
-        if self.split == 'train':
-            # List of all possible non-subgraphing augmentations
-            non_subgraph_augs = [
-                # Drug graph augmentations
-                (lambda: mask_node_features(drug_graph.x, mask_prob=0.03), 0.2), 
-                (lambda: perturb_features(drug_graph.x, noise_std=0.005), 0.2),
-                (lambda: perturb_edge_attr(drug_graph.edge_attr, noise_std=0.005), 0.2),
-                # Protein graph augmentations
-                (lambda: mask_node_features(protein_graph.x, mask_prob=0.03), 0.2),
-                (lambda: perturb_features(protein_graph.x, noise_std=0.005), 0.2),
-                (lambda: perturb_edge_attr(protein_graph.edge_attr, noise_std=0.005), 0.2),
-                # Node and edge operations
-                (lambda: drop_nodes(protein_graph.x, protein_graph.edge_index, protein_graph.edge_attr, drop_prob=0.03), 0.25),
-                (lambda: drop_edges(protein_graph.edge_index, protein_graph.edge_attr, drop_prob=0.03), 0.25),
-                (lambda: add_random_edges(protein_graph.edge_index, protein_graph.edge_attr, protein_graph.x.size(0), add_prob=0.005), 0.2)
-            ]
-            
-            # Randomly select up to 3 non-subgraphing augmentations
-            selected_augs = []
-            for aug_func, prob in non_subgraph_augs:
-                if random.random() < prob:
-                    selected_augs.append(aug_func)
-                if len(selected_augs) >= 3:
-                    break
-            
-            # Apply selected augmentations
-            for aug_func in selected_augs:
-                result = aug_func()
-                if isinstance(result, tuple):
-                    if len(result) == 2:  # edge operations
-                        protein_graph.edge_index, protein_graph.edge_attr = result
-                    else:  # node operations
-                        protein_graph.x, protein_graph.edge_index, protein_graph.edge_attr = result
-                else:
-                    if result.shape == drug_graph.x.shape:
-                        drug_graph.x = result
-                    elif result.shape == protein_graph.x.shape:
-                        protein_graph.x = result
-                    elif result.shape == drug_graph.edge_attr.shape:
-                        drug_graph.edge_attr = result
-                    elif result.shape == protein_graph.edge_attr.shape:
-                        protein_graph.edge_attr = result
-            
-            # Subgraph sampling (30% chance) - independent of other augmentations
-            if random.random() < 0.3:
-                # Randomly sample between 60% and 85% of the graph
-                sample_ratio = random.uniform(0.6, 0.85)
-                protein_graph.x, protein_graph.edge_index, protein_graph.edge_attr = sample_subgraph(
-                    protein_graph.x, protein_graph.edge_index, protein_graph.edge_attr, 
-                    sample_ratio=sample_ratio)
+
+        if self.transform is not None:
+            drug_graph, protein_graph, label = self.transform((drug_graph, protein_graph, label))
 
         return drug_graph, protein_graph, label
 
@@ -233,25 +361,173 @@ class GNNDataset(Dataset):
         else:
             return list(self.df["affinity"])
 
-        
+
+from torch_geometric.data import Batch
+
 def collate(data_list):
-    # Pre-allocate lists for better memory efficiency
-    drug_graphs = []
-    protein_graphs = []
-    labels = []
-    
-    # Collect data
-    for data in data_list:
-        drug_graphs.append(data[0])
-        protein_graphs.append(data[1])
-        labels.append(data[2])
-    
-    # Create batches
-    batchA = Batch.from_data_list(drug_graphs)
-    batchB = Batch.from_data_list(protein_graphs)
-    labels = torch.stack(labels)  # More efficient than torch.Tensor
-    
-    return batchA, batchB, labels
+    drug_graphs, protein_graphs, labels = zip(*data_list)
+    return Batch.from_data_list(drug_graphs), Batch.from_data_list(protein_graphs), torch.stack(labels)
+
+import torch
+from torch_geometric.transforms import BaseTransform
+
+class MaskDrugNodeFeatures(BaseTransform):
+    def __init__(self, prob=0.2, mask_prob=0.03):
+        self.prob = prob
+        self.mask_prob = mask_prob
+
+    def __call__(self, data_tuple):
+        if torch.rand(1).item() < self.prob:
+            drug_graph, protein_graph, label = data_tuple
+            drug_graph = drug_graph.clone()
+            mask = torch.rand(drug_graph.x.size(0), device=drug_graph.x.device) < self.mask_prob
+            drug_graph.x[mask] = 0.0
+            return drug_graph, protein_graph, label
+        return data_tuple
+
+class PerturbDrugNodeFeatures(BaseTransform):
+    def __init__(self, prob=0.2, noise_std=0.005):
+        self.prob = prob
+        self.noise_std = noise_std
+
+    def __call__(self, data_tuple):
+        if torch.rand(1).item() < self.prob:
+            drug_graph, protein_graph, label = data_tuple
+            drug_graph = drug_graph.clone()
+            drug_graph.x += torch.randn_like(drug_graph.x) * self.noise_std
+            return drug_graph, protein_graph, label
+        return data_tuple
+
+class PerturbDrugEdgeAttr(BaseTransform):
+    def __init__(self, prob=0.2, noise_std=0.005):
+        self.prob = prob
+        self.noise_std = noise_std
+
+    def __call__(self, data_tuple):
+        if torch.rand(1).item() < self.prob:
+            drug_graph, protein_graph, label = data_tuple
+            drug_graph = drug_graph.clone()
+            drug_graph.edge_attr += torch.randn_like(drug_graph.edge_attr) * self.noise_std
+            return drug_graph, protein_graph, label
+        return data_tuple
+
+
+class MaskProteinNodeFeatures(BaseTransform):
+    def __init__(self, prob=0.2, mask_prob=0.03):
+        self.prob = prob
+        self.mask_prob = mask_prob
+
+    def __call__(self, data_tuple):
+        if torch.rand(1).item() < self.prob:
+            drug_graph, protein_graph, label = data_tuple
+            protein_graph = protein_graph.clone()
+            mask = torch.rand(protein_graph.x.size(0), device=protein_graph.x.device) < self.mask_prob
+            protein_graph.x[mask] = 0.0
+            return drug_graph, protein_graph, label
+        return data_tuple
+
+class PerturbProteinNodeFeatures(BaseTransform):
+    def __init__(self, prob=0.2, noise_std=0.005):
+        self.prob = prob
+        self.noise_std = noise_std
+
+    def __call__(self, data_tuple):
+        if torch.rand(1).item() < self.prob:
+            drug_graph, protein_graph, label = data_tuple
+            protein_graph = protein_graph.clone()
+            protein_graph.x += torch.randn_like(protein_graph.x) * self.noise_std
+            return drug_graph, protein_graph, label
+        return data_tuple
+
+class PerturbProteinEdgeAttr(BaseTransform):
+    def __init__(self, prob=0.2, noise_std=0.005):
+        self.prob = prob
+        self.noise_std = noise_std
+
+    def __call__(self, data_tuple):
+        if torch.rand(1).item() < self.prob:
+            drug_graph, protein_graph, label = data_tuple
+            protein_graph = protein_graph.clone()
+            protein_graph.edge_attr += torch.randn_like(protein_graph.edge_attr) * self.noise_std
+            return drug_graph, protein_graph, label
+        return data_tuple
+
+class DropProteinNodes(BaseTransform):
+    def __init__(self, prob=0.25, drop_prob=0.03):
+        self.prob = prob
+        self.drop_prob = drop_prob
+
+    def __call__(self, data_tuple):
+        if torch.rand(1).item() < self.prob:
+            drug_graph, protein_graph, label = data_tuple
+            protein_graph = protein_graph.clone()
+            
+            keep = torch.rand(protein_graph.x.size(0), device=protein_graph.x.device) > self.drop_prob
+            protein_graph.x = protein_graph.x[keep]
+
+            mapping = torch.full((len(keep),), -1, device=protein_graph.x.device)
+            mapping[keep] = torch.arange(keep.sum(), device=protein_graph.x.device)
+
+            mask_edge = keep[protein_graph.edge_index[0]] & keep[protein_graph.edge_index[1]]
+            protein_graph.edge_index = mapping[protein_graph.edge_index[:, mask_edge]]
+            protein_graph.edge_attr = protein_graph.edge_attr[mask_edge]
+
+            return drug_graph, protein_graph, label
+        return data_tuple
+
+class DropProteinEdges(BaseTransform):
+    def __init__(self, prob=0.25, drop_prob=0.03):
+        self.prob = prob
+        self.drop_prob = drop_prob
+
+    def __call__(self, data_tuple):
+        if torch.rand(1).item() < self.prob:
+            drug_graph, protein_graph, label = data_tuple
+            protein_graph = protein_graph.clone()
+            num_edges = protein_graph.edge_index.size(1)
+            keep = torch.rand(num_edges, device=protein_graph.edge_index.device) > self.drop_prob
+            protein_graph.edge_index = protein_graph.edge_index[:, keep]
+            protein_graph.edge_attr = protein_graph.edge_attr[keep]
+            return drug_graph, protein_graph, label
+        return data_tuple
+
+class AddRandomProteinEdges(BaseTransform):
+    def __init__(self, prob=0.2, add_prob=0.005):
+        self.prob = prob
+        self.add_prob = add_prob
+
+    def __call__(self, data_tuple):
+        if torch.rand(1).item() < self.prob:
+            drug_graph, protein_graph, label = data_tuple
+            protein_graph = protein_graph.clone()
+
+            num_nodes = protein_graph.x.size(0)
+            num_possible = num_nodes * (num_nodes - 1)
+            num_add = int(self.add_prob * num_possible)
+
+            rand_src = torch.randint(0, num_nodes, (num_add,), device=protein_graph.x.device)
+            rand_dst = torch.randint(0, num_nodes, (num_add,), device=protein_graph.x.device)
+            new_edges = torch.stack([rand_src, rand_dst], dim=0)
+
+            new_edge_attr = torch.zeros((num_add, protein_graph.edge_attr.size(1)), device=protein_graph.edge_attr.device)
+
+            protein_graph.edge_index = torch.cat([protein_graph.edge_index, new_edges], dim=1)
+            protein_graph.edge_attr = torch.cat([protein_graph.edge_attr, new_edge_attr], dim=0)
+
+            return drug_graph, protein_graph, label
+        return data_tuple
+
+from torch_geometric.transforms import BaseTransform
+
+class TupleCompose(BaseTransform):
+    def __init__(self, transforms):
+        self.transforms = transforms
+
+    def __call__(self, data_tuple):
+        for transform in self.transforms:
+            data_tuple = transform(data_tuple)
+        return data_tuple
+
 
 def standardize_tensor(tensor, mean, std, epsilon=1e-8):
     """
