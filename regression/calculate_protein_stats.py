@@ -13,25 +13,30 @@ def calculate_mean_std_per_key(data_dir):
     """
     # Keys that we should NOT normalize
     keys_to_skip = {
-        'one_hot_residues', 'relative_position', 'clustering', 'edge_index', 'pos', 'esm_embeddings'
+        'one_hot_residues', 'relative_position', 'clustering', 'edge_index', 'pos', 'esm_embeddings' ,
+        'x_coords', 'node_v', 'node_s', 'edge_v', 'edge_s'
     }
 
     all_tensors = collections.defaultdict(list)
+    
+    # print(all_tensors)
 
     for filename in os.listdir(data_dir):
         if filename.endswith('.pkl'):
             with open(os.path.join(data_dir, filename), 'rb') as f:
                 data = pickle.load(f)
-
-                for key, value in data.items():
-                    if torch.is_tensor(value):
-                        if key in keys_to_skip:
-                            continue
-                        if key == 'edge_attr':
-                            # Only take last 6 columns: distance, angle, dx, dy, dz, seq_sep
-                            all_tensors[key].append(value[:, 6:])
-                        else:
-                            all_tensors[key].append(value)
+        elif filename.endswith('.pt'):
+            data = torch.load(os.path.join(data_dir, filename), weights_only=False)
+            
+            for key, value in data.items():
+                if torch.is_tensor(value):
+                    if key in keys_to_skip:
+                        continue
+                    if key == 'edge_attr':
+                        # Only take last 6 columns: distance, angle, dx, dy, dz, seq_sep
+                        all_tensors[key].append(value[:, 6:9])
+                    else:
+                        all_tensors[key].append(value)
 
     # Now calculate mean and std per feature key
     stats = {}
@@ -41,6 +46,7 @@ def calculate_mean_std_per_key(data_dir):
         mean = concatenated.mean(dim=0)
         std = concatenated.std(dim=0)
         stats[key] = {'mean': mean, 'std': std}
+        
 
     return stats
 
@@ -51,10 +57,10 @@ if __name__ == "__main__":
         if dataset not in ['davis', 'kiba']:
             continue
         print(f"Processing {dataset}")
-        data_directory = f"./data/{dataset}/protein_graphs_with_all_embeddings"
+        data_directory = f"./data/{dataset}/protein_graphs_with_all_embeddings_gvp"
         stats = calculate_mean_std_per_key(data_directory)
 
-        with open(f'./data/{dataset}_stats.pkl', 'wb') as f:
+        with open(f'./data/{dataset}_stats_gvp.pkl', 'wb') as f:
             pickle.dump(stats, f)
 
         for key, value in stats.items():

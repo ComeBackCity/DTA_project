@@ -19,7 +19,7 @@ from collections import defaultdict
 from torch.utils.tensorboard import SummaryWriter
 
 from metrics import get_cindex, ci
-from dataset_new import *
+from regression.dataset_new_gvp import *
 from model import MGraphDTA
 from utils import (
     AverageMeter, 

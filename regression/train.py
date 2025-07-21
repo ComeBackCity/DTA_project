@@ -11,10 +11,11 @@ from torch_geometric.loader import DataLoader
 import torch.nn.functional as F
 import argparse
 from metrics import get_cindex, ci
-from dataset_new import *
+from regression.dataset_new_gvp import *
 from model import MGraphDTA
 from model_inception import MGraphDTAInception
-from my_model import SimpleGATCrossModel
+# from my_model import SimpleGATCrossModel
+from my_model_gvp import SimpleGATGVPCrossModel
 # from my_model_improved import SimpleGATCrossModel
 from utils import (
     AverageMeter, 
@@ -30,10 +31,12 @@ import torch_geometric.transforms as T
 from transformers import get_cosine_schedule_with_warmup
 from tqdm import tqdm
 from collections import defaultdict
-from dataset_new import *
+from regression.dataset_new_gvp import *
 from torch.utils.tensorboard import SummaryWriter
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
+from torch.optim.lr_scheduler import LRScheduler
+from typing import Any, Dict, Optional
 
 
 def setup_seed(seed):
@@ -55,7 +58,7 @@ def val(model, criterion, dataloader, device):
     with torch.no_grad():
         for data in tqdm(dataloader, desc="Validation", leave=False):
             data = [data_elem.to(device) for data_elem in data]
-            y = data[2]
+            y = data[3]
             pred = model(data)
             loss = criterion(pred.view(-1), y.view(-1))
             running_loss.update(loss.item(), y.size(0))
@@ -133,10 +136,6 @@ class CosineAnnealingWithWarmupWeightDecay:
 
     def load_state_dict(self, state):
         self.last_step = state.get('last_step', 0)
-        
-        
-from torch.optim.lr_scheduler import LRScheduler
-from typing import Any, Dict, Optional
 
 
 # class WarmupExponentialLR(LRScheduler):
@@ -339,27 +338,26 @@ def main():
     fpath = os.path.join(data_root, DATASET)
 
     transforms = TupleCompose([
-        MaskDrugNodeFeatures(prob=0.2, mask_prob=0.03),
-        PerturbDrugNodeFeatures(prob=0.2, noise_std=0.005),
-        PerturbDrugEdgeAttr(prob=0.2, noise_std=0.005),
-        MaskProteinNodeFeatures(prob=0.2, mask_prob=0.03),
-        PerturbProteinNodeFeatures(prob=0.2, noise_std=0.005),
-        PerturbProteinEdgeAttr(prob=0.2, noise_std=0.005),
+        MaskDrugNodeFeatures(prob=0.15, mask_prob=0.075),
+        PerturbDrugNodeFeatures(prob=0.15, noise_std=0.01),
+        PerturbDrugEdgeAttr(prob=0.15, noise_std=0.01),
+        MaskProteinNodeFeatures(prob=0.15, mask_prob=0.05),
+        PerturbProteinNodeFeatures(prob=0.15, noise_std=0.01),
+        PerturbProteinEdgeAttr(prob=0.15, noise_std=0.005),
         DropProteinNodes(prob=0.25, drop_prob=0.03),
         DropProteinEdges(prob=0.25, drop_prob=0.03),
-        AddRandomProteinEdges(prob=0.2, add_prob=0.005)
+        AddRandomProteinEdges(prob=0.15, add_prob=0.005)
     ])
     
     train_set = GNNDataset(DATASET, split='train', transform = transforms)
     val_set = GNNDataset(DATASET, split='valid')
+
     
     labels = train_set.get_labels()
 
     
 
     # Compose drug transforms
-    
-
     
     # sampler = BalancedRegressionBatchSampler2(labels, params.get('batch_size'), minority_ratio=.6, shuffle=True)
     # sampler = BalancedRegressionBatchSampler2(labels, params.get('batch_size'), minority_ratio=.55, shuffle=True)
@@ -398,10 +396,10 @@ def main():
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    model = SimpleGATCrossModel(
+    model = SimpleGATGVPCrossModel(
         prot_feat_dim=1204, 
         drug_feat_dim=34, 
-        prot_edge_dim=13,
+        prot_edge_dim=10,
         drug_edge_dim=8,
         hidden_dim=256,
         prot_layers=6,
@@ -462,6 +460,10 @@ def main():
     #     decay_rate=3.5,
     # )
 
+    # MultiStepLR scheduler
+    milestones = [50, 150, 250, 350, 450]
+    lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=0.5)
+
 
     
 
@@ -490,8 +492,7 @@ def main():
     break_flag = False
 
     if args.resume:
-        # checkpoint = load_checkpoint(model, optimizer, lr_scheduler, args.resume)
-        checkpoint = load_checkpoint(model, optimizer, None, args.resume)
+        checkpoint = load_checkpoint(model, optimizer, lr_scheduler, args.resume)
         if checkpoint:
             start_epoch = checkpoint['epoch'] + 1
             best_val_loss = checkpoint['best_val_loss']
@@ -517,24 +518,18 @@ def main():
                 #     sampler.load_state_dict(sampler_state['train'])
                 #     logger.info("Restored training sampler state")
                 
-                # if sampler_state.get('val') is not None and hasattr(val_loader.batch_sampler, 'load_state_dict'):
-                #     val_loader.batch_sampler.load_state_dict(sampler_state['val'])
-                #     logger.info("Restored validation sampler state")
+                if sampler_state.get('val') is not None and hasattr(val_loader.batch_sampler, 'load_state_dict'):
+                    val_loader.batch_sampler.load_state_dict(sampler_state['val'])
+                    logger.info("Restored validation sampler state")
             
             wd_params = checkpoint.get('weight_decay_params')
             if wd_params is not None:
                 args.weight_decay = wd_params.get('weight_decay', args.weight_decay)
             
             # Restore scheduler states
-            # if checkpoint.get('scheduler_state_dict') is not None:
-            #     print(checkpoint['scheduler_state_dict'])
-            #     exit()
-            #     lr_scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-            #     # Calculate the correct step for the scheduler
-            #     steps_completed = start_epoch * len(train_loader)
-            #     for _ in range(steps_completed):
-            #         lr_scheduler.step()
-            #     logger.info(f"Restored learning rate scheduler state at step {steps_completed}")
+            if checkpoint.get('scheduler_state_dict') is not None:
+                lr_scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                logger.info(f"Restored learning rate scheduler state")
             
             # if checkpoint.get('wd_scheduler_state') is not None:
             #     wd_scheduler.load_state_dict(checkpoint['wd_scheduler_state'])
@@ -572,7 +567,8 @@ def main():
             optimizer.zero_grad()
             pred = model(data)
             
-            y = data[2]
+            y = data[3]
+
             loss = criterion(pred.view(-1), y.view(-1))         
             cindex = get_cindex(
                 y.detach().cpu().numpy().reshape(-1), 
@@ -609,7 +605,7 @@ def main():
                     'epoch': epoch,
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
-                    # 'scheduler_state_dict': lr_scheduler.state_dict(),
+                    'scheduler_state_dict': lr_scheduler.state_dict(),
                     'best_val_loss': best_val_loss,
                     'best_epoch': best_epoch,  # Save best epoch in checkpoint
                     'criterion_state': criterion.state_dict() if hasattr(criterion, 'state_dict') else None,
@@ -641,7 +637,7 @@ def main():
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                # 'scheduler_state_dict': lr_scheduler.state_dict(),
+                'scheduler_state_dict': lr_scheduler.state_dict(),
                 'best_val_loss': best_val_loss,
                 'best_epoch': best_epoch,  # Save best epoch in latest checkpoint
                 'criterion_state': criterion.state_dict() if hasattr(criterion, 'state_dict') else None,
@@ -660,6 +656,9 @@ def main():
                 }
             }, filename=latest_checkpoint_path)
             logger.info(f"Saved Latest Checkpoint at {latest_checkpoint_path}")
+
+        # Step the scheduler at the end of each epoch
+        lr_scheduler.step()
 
         writer.add_scalar("Train/Loss", epoch_loss, epoch)
         writer.add_scalar("Train/CIndex", epoch_cindex, epoch)

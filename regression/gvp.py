@@ -372,3 +372,68 @@ class GVPConvLayer(nn.Module):
             x_[0][node_mask], x_[1][node_mask] = x[0], x[1]
             x = x_
         return x
+    
+
+class StructureEncoder(nn.Module):
+    def __init__(self, node_in_dim, node_h_dim, 
+                 edge_in_dim, edge_h_dim,
+                 seq_in=False, num_layers=3, drop_rate=0.1):
+        #node_in_dim 6*3, 512*16
+        #edge_in_dim 32*1, 32*1
+
+        super(StructureEncoder, self).__init__()
+        
+        self.seq_in = seq_in
+
+        if seq_in:
+            self.W_s = nn.Embedding(21, 21)
+            node_in_dim = (node_in_dim[0] + 21, node_in_dim[1])
+        
+        self.W_v = nn.Sequential(
+            LayerNorm(node_in_dim),
+            GVP(node_in_dim, node_h_dim, activations=(None, None))
+        )
+        self.W_e = nn.Sequential(
+            LayerNorm(edge_in_dim),
+            GVP(edge_in_dim, edge_h_dim, activations=(None, None))
+        )
+        
+        self.layers = nn.ModuleList(
+                GVPConvLayer(node_h_dim, edge_h_dim, drop_rate=drop_rate) 
+            for _ in range(num_layers))
+
+        ns, _ = node_h_dim
+        self.W_out = nn.Sequential(
+            LayerNorm(node_h_dim),
+            GVP(node_h_dim, (ns, 0)))
+
+        self.dense = nn.Sequential(
+            nn.Linear(ns, 2*ns), nn.ReLU(inplace=True),
+            nn.Dropout(p=drop_rate),
+            nn.Linear(2*ns, 1)
+        )
+
+        self.ln = nn.LayerNorm(node_h_dim[0])
+
+    def forward(self, h_V, h_E, edge_index, seq=None):      
+        # h_V=([seqs_len, 6], [seqs_len, 3, 3])
+        # h_E=([seqs_len, 32], [seqs_len, 1, 3])
+        if self.seq_in and seq is not None:
+            # seq=[seqs_len]
+            seq = self.W_s(seq)
+            # seq=[seqs_len, 20]
+            h_V = (torch.cat([h_V[0], seq], dim=-1), h_V[1])
+            # h_V=([seqs_len, 26], [seqs_len, 3, 3])
+        h_V = self.W_v(h_V)
+        # h_V=([seqs_len, hid_dim], [seqs_len, 16, 3])  hid_dim 512
+        h_E = self.W_e(h_E)
+        # h_E=([seqs_len, 32], [seqs_len, 1, 3])
+        for layer in self.layers:
+            h_V = layer(h_V, edge_index, h_E)
+        # h_V=([seqs_len, hid_dim], [seqs_len, 16, 3])
+        out = self.W_out(h_V)
+        # out=[seqs_len, hid_dim]
+
+        out = self.ln(out)
+
+        return out

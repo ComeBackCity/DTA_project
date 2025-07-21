@@ -91,7 +91,7 @@ def add_relative_position(g: nx.Graph):
 #         idx = STANDARD_RES.index(aa) if aa in STANDARD_RES else None
 #         attr['blosum62'] = BLOSUM62[idx].tolist() if idx is not None else np.zeros(20).tolist()
 
-def build_edge_features(g: nx.Graph) -> (torch.Tensor, torch.Tensor):
+def build_edge_features(g: nx.Graph) :
     edge_indices = []
     edge_attrs = []
     LONG_RANGE_THRESHOLD = 12

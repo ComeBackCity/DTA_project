@@ -16,7 +16,7 @@ def calculate_mean_std_per_key(data_dir, file_name):
     all_tensors = collections.defaultdict(list)
 
     file_path = os.path.join(data_dir, file_name)
-    data_dict = torch.load(file_path)
+    data_dict = torch.load(file_path, weights_only=False)
 
     for data in data_dict.values():
         if hasattr(data, 'x') and torch.is_tensor(data.x):

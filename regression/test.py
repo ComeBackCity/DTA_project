@@ -9,7 +9,7 @@ import argparse
 from tqdm import tqdm
 
 from metrics import get_cindex, get_rm2
-from dataset_new import *
+from regression.dataset_new_gvp import *
 from my_model import SimpleGATCrossModel
 from utils import *
 

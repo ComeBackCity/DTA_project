@@ -15,7 +15,8 @@ from tqdm import tqdm
 import re
 import sys
 sys.path.append("../")
-from convert_pdb_to_pyg import uniprot_id_to_structure
+# from convert_pdb_to_pyg import uniprot_id_to_structure
+from convert_pdb_to_pyg_updated import uniprot_id_to_structure
 import gc
 import pickle
 import random
@@ -48,7 +49,7 @@ def process_data(dataset, model_type="esm2"):
     with open(f"data/{dataset}_mapping.pkl", "rb") as f:
         mapping = pickle.load(f)
         
-    save_dir = f"./data/{dataset}/protein_graphs_with_all_embeddings_pt"
+    save_dir = f"./data/{dataset}/protein_graphs_with_all_embeddings_gvp"
     os.makedirs(save_dir, exist_ok=True)
         
     print(f"Processing {dataset} protein sequences and saving graphs with embeddings to {save_dir}")
