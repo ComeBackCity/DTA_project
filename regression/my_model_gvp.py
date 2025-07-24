@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GATv2Conv, GlobalAttention
-from gvp import StructureEncoder  # Import your GVP block
+from gvp import StructureEncoder
+
 
 class SimpleGATEncoder(nn.Module):
     def __init__(self, in_dim, hidden_dim, out_dim, edge_dim=None, num_layers=3, heads=4, dropout=0.15):
@@ -14,12 +15,20 @@ class SimpleGATEncoder(nn.Module):
 
         for i in range(num_layers):
             input_dim = in_dim if i == 0 else hidden_dim
-            self.layers.append(
-                GATv2Conv(input_dim, hidden_dim // heads, heads=heads, edge_dim=edge_dim, dropout=dropout, residual=True))
+            self.layers.append(GATv2Conv(input_dim, hidden_dim // heads, heads=heads, edge_dim=edge_dim, dropout=dropout, residual=True))
             self.batch_norms.append(nn.BatchNorm1d(hidden_dim))
             self.non_linears.append(nn.LeakyReLU(0.2))
 
         self.final_proj = nn.Linear(hidden_dim, out_dim)
+        self.reset_parameters()  # << added
+
+    def reset_parameters(self):
+        for layer in self.layers:
+            layer.reset_parameters()
+        for bn in self.batch_norms:
+            bn.reset_parameters()
+        nn.init.xavier_uniform_(self.final_proj.weight)
+        nn.init.zeros_(self.final_proj.bias)
 
     def forward(self, x, edge_index, edge_attr=None):
         for layer, batch_norm, non_linearity in zip(self.layers, self.batch_norms, self.non_linears):
@@ -29,6 +38,7 @@ class SimpleGATEncoder(nn.Module):
             x = self.dropout(x)
         return self.final_proj(x)
 
+
 class SimpleCrossAttention(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -36,6 +46,12 @@ class SimpleCrossAttention(nn.Module):
         self.k_proj = nn.Linear(dim, dim)
         self.v_proj = nn.Linear(dim, dim)
         self.out_proj = nn.Linear(dim, dim)
+        self.reset_parameters()  # << added
+
+    def reset_parameters(self):
+        for layer in [self.q_proj, self.k_proj, self.v_proj, self.out_proj]:
+            nn.init.xavier_uniform_(layer.weight)
+            nn.init.zeros_(layer.bias)
 
     def forward(self, q_feat, k_feat, q_batch, k_batch):
         Q = self.q_proj(q_feat)
@@ -52,17 +68,13 @@ class SimpleCrossAttention(nn.Module):
 
         return attended, attn
 
-class AttentionFusion(nn.Module):
-    """
-    Bidirectional cross-attention fusion between GAT and GVP features.
-    """
 
+class AttentionFusion(nn.Module):
     def __init__(self, hidden_dim, num_heads=4, dropout=0.15):
         super().__init__()
         self.cross_attn_gat_to_gvp = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, dropout=dropout, batch_first=True)
         self.cross_attn_gvp_to_gat = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, dropout=dropout, batch_first=True)
 
-        # Input size = 4 * hidden_dim (gat, gvp, attn_gat_to_gvp, attn_gvp_to_gat)
         self.linear_stack = nn.Sequential(
             nn.Linear(hidden_dim * 4, hidden_dim),
             nn.BatchNorm1d(hidden_dim),
@@ -70,27 +82,24 @@ class AttentionFusion(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, hidden_dim)
         )
+        self.reset_parameters()  # << added
+
+    def reset_parameters(self):
+        for m in self.linear_stack:
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm1d):
+                m.reset_parameters()
 
     def forward(self, gat_feat, gvp_feat):
-        """
-        Args:
-            gat_feat: (N, D)
-            gvp_feat: (N, D)
-        Returns:
-            fused: (N, D)
-        """
-
-        # GAT → GVP cross-attention
         attn_gat_to_gvp, _ = self.cross_attn_gat_to_gvp(gat_feat.unsqueeze(1), gvp_feat.unsqueeze(1), gvp_feat.unsqueeze(1))
-        attn_gat_to_gvp = attn_gat_to_gvp.squeeze(1)  # (N, D)
+        attn_gat_to_gvp = attn_gat_to_gvp.squeeze(1)
 
-        # GVP → GAT cross-attention
         attn_gvp_to_gat, _ = self.cross_attn_gvp_to_gat(gvp_feat.unsqueeze(1), gat_feat.unsqueeze(1), gat_feat.unsqueeze(1))
-        attn_gvp_to_gat = attn_gvp_to_gat.squeeze(1)  # (N, D)
+        attn_gvp_to_gat = attn_gvp_to_gat.squeeze(1)
 
-        # Concatenate: original features + attentions
-        fused_input = torch.cat([gat_feat, gvp_feat, attn_gat_to_gvp, attn_gvp_to_gat], dim=1)  # (N, 4D)
-
+        fused_input = torch.cat([gat_feat, gvp_feat, attn_gat_to_gvp, attn_gvp_to_gat], dim=1)
         return self.linear_stack(fused_input)
 
 
@@ -104,20 +113,12 @@ class SimpleGATGVPCrossModel(nn.Module):
                  prot_layers=4,
                  prot_gvp_layer=3,
                  drug_layers=2,
-                 dropout=0.15,  
+                 dropout=0.15,
                  out_dim=1,
                  heads=4):
         super().__init__()
 
-        self.prot_gat = SimpleGATEncoder(
-            in_dim=prot_feat_dim,
-            hidden_dim=hidden_dim,
-            out_dim=hidden_dim,
-            edge_dim=prot_edge_dim,
-            num_layers=prot_layers,
-            heads=heads,
-            dropout=dropout
-        )
+        self.prot_gat = SimpleGATEncoder(prot_feat_dim, hidden_dim, hidden_dim, prot_edge_dim, prot_layers, heads, dropout)
 
         self.prot_gvp = StructureEncoder(
             node_in_dim=(6, 3),
@@ -129,17 +130,9 @@ class SimpleGATGVPCrossModel(nn.Module):
             drop_rate=dropout
         )
 
-        self.prot_fusion = AttentionFusion(hidden_dim=hidden_dim, num_heads=4, dropout=dropout)
+        self.prot_fusion = AttentionFusion(hidden_dim=hidden_dim, num_heads=heads, dropout=dropout)
 
-        self.drug_enc = SimpleGATEncoder(
-            in_dim=drug_feat_dim,
-            hidden_dim=hidden_dim,
-            out_dim=hidden_dim,
-            edge_dim=drug_edge_dim,
-            num_layers=drug_layers,
-            heads=heads,
-            dropout=dropout
-        )
+        self.drug_enc = SimpleGATEncoder(drug_feat_dim, hidden_dim, hidden_dim, drug_edge_dim, drug_layers, heads, dropout)
 
         self.cross_attn_p_to_d = SimpleCrossAttention(hidden_dim)
         self.cross_attn_d_to_p = SimpleCrossAttention(hidden_dim)
@@ -175,6 +168,15 @@ class SimpleGATGVPCrossModel(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden_dim // 4, out_dim)
         )
+        self.reset_parameters()  # << added
+
+    def reset_parameters(self):
+        for m in self.out:
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm1d):
+                m.reset_parameters()
 
     def forward(self, data):
         drug, prot_gat, prot_gvp, _ = data
@@ -185,8 +187,8 @@ class SimpleGATGVPCrossModel(nn.Module):
 
         x_p = self.prot_fusion(x_p_gat, x_p_gvp)
 
-        a1, attn1 = self.cross_attn_d_to_p(x_p, x_d, prot_gat.batch, drug.batch)
-        a2, attn2 = self.cross_attn_p_to_d(x_d, x_p, drug.batch, prot_gat.batch)
+        a1, _ = self.cross_attn_d_to_p(x_p, x_d, prot_gat.batch, drug.batch)
+        a2, _ = self.cross_attn_p_to_d(x_d, x_p, drug.batch, prot_gat.batch)
 
         weights_p = F.softmax(self.fusion_weights_p, dim=1)
         weights_d = F.softmax(self.fusion_weights_d, dim=1)
