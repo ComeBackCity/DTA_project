@@ -102,6 +102,7 @@ class SimpleGATGVPCrossModel(nn.Module):
                  drug_edge_dim,
                  hidden_dim=128,
                  prot_layers=4,
+                 prot_gvp_layer=3,
                  drug_layers=2,
                  out_dim=1,
                  heads=4):
@@ -123,8 +124,8 @@ class SimpleGATGVPCrossModel(nn.Module):
             edge_in_dim=(32, 1),
             edge_h_dim=(32, 1),
             seq_in=False,
-            num_layers=3,
-            drop_rate=0.1
+            num_layers=prot_gvp_layer,
+            drop_rate=0.15
         )
 
         self.prot_fusion = AttentionFusion(hidden_dim=hidden_dim, num_heads=4, dropout=0.15)

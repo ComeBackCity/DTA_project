@@ -11,7 +11,7 @@ from torch_geometric.loader import DataLoader
 import torch.nn.functional as F
 import argparse
 from metrics import get_cindex, ci
-from regression.dataset_new_gvp import *
+from dataset_new_gvp import *
 from model import MGraphDTA
 from model_inception import MGraphDTAInception
 # from my_model import SimpleGATCrossModel
@@ -314,7 +314,7 @@ def main():
     args = parser.parse_args()
 
     if args.lr is None:
-        args.lr = calculate_learning_rate(args.batch_size, base_batch_size=32, base_lr=1e-6)
+        args.lr = calculate_learning_rate(args.batch_size, base_batch_size=32, base_lr=1e-4)
         print(f"Using automatically calculated learning rate: {args.lr:.2e} for batch size {args.batch_size}")
     if args.weight_decay is None:
         args.weight_decay = get_weight_decay(args.batch_size)
@@ -338,18 +338,19 @@ def main():
     fpath = os.path.join(data_root, DATASET)
 
     transforms = TupleCompose([
-        MaskDrugNodeFeatures(prob=0.15, mask_prob=0.075),
-        PerturbDrugNodeFeatures(prob=0.15, noise_std=0.01),
-        PerturbDrugEdgeAttr(prob=0.15, noise_std=0.01),
-        MaskProteinNodeFeatures(prob=0.15, mask_prob=0.05),
-        PerturbProteinNodeFeatures(prob=0.15, noise_std=0.01),
-        PerturbProteinEdgeAttr(prob=0.15, noise_std=0.005),
-        DropProteinNodes(prob=0.25, drop_prob=0.03),
-        DropProteinEdges(prob=0.25, drop_prob=0.03),
-        AddRandomProteinEdges(prob=0.15, add_prob=0.005)
+        MaskDrugNodeFeatures(prob=0.05, mask_prob=0.05),
+        PerturbDrugNodeFeatures(prob=0.05, noise_std=0.01),
+        PerturbDrugEdgeAttr(prob=0.05, noise_std=0.01),
+        MaskProteinNodeFeatures(prob=0.05, mask_prob=0.05),
+        PerturbProteinNodeFeatures(prob=0.05, noise_std=0.01),
+        PerturbProteinEdgeAttr(prob=0.05, noise_std=0.005),
+        DropProteinNodes(prob=0.1, drop_prob=0.03),
+        DropProteinEdges(prob=0.1, drop_prob=0.03),
+        AddRandomProteinEdges(prob=0.05, add_prob=0.005)
     ])
     
     train_set = GNNDataset(DATASET, split='train', transform = transforms)
+    # train_set = GNNDataset(DATASET, split='train')
     val_set = GNNDataset(DATASET, split='valid')
 
     
@@ -403,6 +404,7 @@ def main():
         drug_edge_dim=8,
         hidden_dim=256,
         prot_layers=6,
+        prot_gvp_layer=6,
         drug_layers=3, 
         out_dim=1,
     ).to(device)
@@ -658,7 +660,7 @@ def main():
             logger.info(f"Saved Latest Checkpoint at {latest_checkpoint_path}")
 
         # Step the scheduler at the end of each epoch
-        lr_scheduler.step()
+        # lr_scheduler.step()
 
         writer.add_scalar("Train/Loss", epoch_loss, epoch)
         writer.add_scalar("Train/CIndex", epoch_cindex, epoch)
