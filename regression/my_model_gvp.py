@@ -104,6 +104,7 @@ class SimpleGATGVPCrossModel(nn.Module):
                  prot_layers=4,
                  prot_gvp_layer=3,
                  drug_layers=2,
+                 dropout=0.15,  
                  out_dim=1,
                  heads=4):
         super().__init__()
@@ -115,7 +116,7 @@ class SimpleGATGVPCrossModel(nn.Module):
             edge_dim=prot_edge_dim,
             num_layers=prot_layers,
             heads=heads,
-            dropout=0.15
+            dropout=dropout
         )
 
         self.prot_gvp = StructureEncoder(
@@ -125,10 +126,10 @@ class SimpleGATGVPCrossModel(nn.Module):
             edge_h_dim=(32, 1),
             seq_in=False,
             num_layers=prot_gvp_layer,
-            drop_rate=0.15
+            drop_rate=dropout
         )
 
-        self.prot_fusion = AttentionFusion(hidden_dim=hidden_dim, num_heads=4, dropout=0.15)
+        self.prot_fusion = AttentionFusion(hidden_dim=hidden_dim, num_heads=4, dropout=dropout)
 
         self.drug_enc = SimpleGATEncoder(
             in_dim=drug_feat_dim,
@@ -137,7 +138,7 @@ class SimpleGATGVPCrossModel(nn.Module):
             edge_dim=drug_edge_dim,
             num_layers=drug_layers,
             heads=heads,
-            dropout=0.15
+            dropout=dropout
         )
 
         self.cross_attn_p_to_d = SimpleCrossAttention(hidden_dim)
@@ -154,7 +155,7 @@ class SimpleGATGVPCrossModel(nn.Module):
 
         self.pool_d = GlobalAttention(gate_nn=nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.Dropout(0.15),
+            nn.Dropout(dropout),
             nn.LeakyReLU(0.2),
             nn.Linear(hidden_dim // 2, 1)
         ))
@@ -163,15 +164,15 @@ class SimpleGATGVPCrossModel(nn.Module):
             nn.Linear(hidden_dim * 2, hidden_dim),
             nn.BatchNorm1d(hidden_dim),
             nn.LeakyReLU(0.2),
-            nn.Dropout(0.15),
+            nn.Dropout(dropout),
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.BatchNorm1d(hidden_dim // 2),
             nn.LeakyReLU(0.2),
-            nn.Dropout(0.15),
+            nn.Dropout(dropout),
             nn.Linear(hidden_dim // 2, hidden_dim // 4),
             nn.BatchNorm1d(hidden_dim // 4),
             nn.LeakyReLU(0.2),
-            nn.Dropout(0.15),
+            nn.Dropout(dropout),
             nn.Linear(hidden_dim // 4, out_dim)
         )
 
